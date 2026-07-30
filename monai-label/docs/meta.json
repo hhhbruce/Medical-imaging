@@ -1,0 +1,37 @@
+{
+  "ContentCreatorName": "SAM2",
+  "ClinicalTrialSeriesID": "Session1",
+  "ClinicalTrialTimePointID": "1",
+  "SeriesDescription": "Segmentation",
+  "SeriesNumber": "300",
+  "InstanceNumber": "1",
+  "segmentAttributes": [
+    [
+      {
+        "labelID": 1,
+        "SegmentDescription": "bone",
+        "SegmentAlgorithmType": "SEMIAUTOMATIC",
+        "SegmentAlgorithmName": "SAM2",
+        "SegmentedPropertyCategoryCodeSequence": {
+          "CodeValue": "91723000",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Anatomical Structure"
+        },
+        "SegmentedPropertyTypeCodeSequence": {
+          "CodeValue": "818981001",
+          "CodingSchemeDesignator": "SCT",
+          "CodeMeaning": "Abdomen"
+        },
+        "recommendedDisplayRGBValue": [
+          177,
+          122,
+          101
+        ]
+      }
+    ]
+  ],
+  "ContentLabel": "SEGMENTATION",
+  "ContentDescription": "Image segmentation",
+  "ClinicalTrialCoordinatingCenterName": "dcmqi",
+  "BodyPartExamined": ""
+}
