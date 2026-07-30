@@ -22,6 +22,7 @@ const PROXY_TARGET = process.env.PROXY_TARGET;
 const PROXY_DOMAIN = process.env.PROXY_DOMAIN;
 const PROXY_PATH_REWRITE_FROM = process.env.PROXY_PATH_REWRITE_FROM;
 const PROXY_PATH_REWRITE_TO = process.env.PROXY_PATH_REWRITE_TO;
+const MONAI_PROXY_DOMAIN = process.env.MONAI_PROXY_DOMAIN || 'http://localhost:8002';
 
 // Add port constant
 const OHIF_PORT = Number(process.env.OHIF_PORT || 3000);
@@ -145,6 +146,10 @@ export default defineConfig({
     open: true,
     // Configure proxy
     proxy: {
+      '/monai': {
+        target: MONAI_PROXY_DOMAIN,
+        changeOrigin: true,
+      },
       '/dicomweb': {
         target: 'http://localhost:5000',
       },

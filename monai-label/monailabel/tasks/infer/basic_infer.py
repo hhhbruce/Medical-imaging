@@ -55,14 +55,15 @@ from monailabel.utils.others.generic import device_list, device_map, name_to_dev
 # heap), which is why it only bites the server. Regular 4KB pages skip the
 # high-order allocation path entirely. Process-local (other containers on the box
 # are unaffected) and inherited by threads; best-effort, never fatal.
-try:
-    import ctypes as _ctypes
+if os.name == "posix":
+    try:
+        import ctypes as _ctypes
 
-    _PR_SET_THP_DISABLE = 41
-    if _ctypes.CDLL("libc.so.6", use_errno=True).prctl(_PR_SET_THP_DISABLE, 1, 0, 0, 0) == 0:
-        logging.getLogger(__name__).info("Transparent Huge Pages disabled for this process (PR_SET_THP_DISABLE)")
-except Exception:
-    logging.getLogger(__name__).warning("Could not disable THP (non-fatal)", exc_info=True)
+        _PR_SET_THP_DISABLE = 41
+        if _ctypes.CDLL("libc.so.6", use_errno=True).prctl(_PR_SET_THP_DISABLE, 1, 0, 0, 0) == 0:
+            logging.getLogger(__name__).info("Transparent Huge Pages disabled for this process (PR_SET_THP_DISABLE)")
+    except Exception:
+        logging.getLogger(__name__).warning("Could not disable THP (non-fatal)", exc_info=True)
 
 from monailabel.utils.others.helper import (
     get_scanline_filled_points_3d,
@@ -77,8 +78,6 @@ from monailabel.utils.others.helper import (
 from monailabel.utils.others.medgemma import encode_slice_to_jpeg_bytes, window_mri, window, _encode
 from sam2.build_sam import build_sam2_video_predictor, build_sam2_video_predictor_npz
 
-from sam3.model_builder import build_sam3_video_model
-
 #from mmdet.apis import DetInferencer
 #from mmdet.evaluation import get_classes
 #from mmcv.visualization import imshow_bboxes
@@ -87,12 +86,30 @@ import requests
 from PIL import Image
 #from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection 
 
-sam2_checkpoint = "/code/checkpoints/sam2.1_hiera_tiny.pt"
+_PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
+CHECKPOINTS_DIR = pathlib.Path(
+    os.environ.get("MONAI_LABEL_CHECKPOINTS_DIR", _PROJECT_ROOT / "checkpoints")
+).expanduser().resolve()
+RUNTIME_DIR = pathlib.Path(
+    os.environ.get("MONAI_LABEL_RUNTIME_DIR", _PROJECT_ROOT)
+).expanduser().resolve()
+PREDICTIONS_DIR = RUNTIME_DIR / "predictions"
+IMG_CACHE_DIR = RUNTIME_DIR / "img_cache"
+
+for _runtime_path in (CHECKPOINTS_DIR, PREDICTIONS_DIR, IMG_CACHE_DIR):
+    _runtime_path.mkdir(parents=True, exist_ok=True)
+
+
+def _prediction_path(filename: str) -> str:
+    return str(PREDICTIONS_DIR / filename)
+
+
+sam2_checkpoint = str(CHECKPOINTS_DIR / "sam2.1_hiera_tiny.pt")
 model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
-medsam2_checkpoint = "/code/checkpoints/MedSAM2_latest.pt"
+medsam2_checkpoint = str(CHECKPOINTS_DIR / "MedSAM2_latest.pt")
 medsam2_model_cfg = "configs/sam2.1/sam2.1_hiera_t512.yaml"
 
-sam3_checkpoint = "/code/checkpoints/sam3.pt"
+sam3_checkpoint = str(CHECKPOINTS_DIR / "sam3.pt")
 
 #from transformers import BertConfig, BertModel
 #from transformers import AutoTokenizer
@@ -113,11 +130,33 @@ sam3_checkpoint = "/code/checkpoints/sam3.pt"
 #model.save_pretrained("code/bert-base-uncased")
 #tokenizer.save_pretrained("code/bert-base-uncased")
 
-from huggingface_hub import snapshot_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 REPO_ID = "nnInteractive/nnInteractive"
 MODEL_NAME = "nnInteractive_v1.0"  # Updated models may be available in the future
-DOWNLOAD_DIR = "/code/checkpoints"  # Specify the download directory
+DOWNLOAD_DIR = str(CHECKPOINTS_DIR)
+
+
+def _ensure_flat_checkpoint_link(flat_name: str, target: pathlib.Path) -> bool:
+    """Expose a flat local checkpoint through the directory layout expected by its package."""
+    if target.is_file():
+        return True
+
+    source = CHECKPOINTS_DIR / flat_name
+    if not source.is_file():
+        return False
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, target)
+    except FileExistsError:
+        pass
+    except OSError as error:
+        raise RuntimeError(
+            f"Cannot create checkpoint hard link from {source} to {target}. "
+            "Keep the checkpoint directory on one local filesystem or provide the packaged model layout."
+        ) from error
+    return True
 
 
 def _snapshot_download_cached(**kwargs):
@@ -132,11 +171,44 @@ def _snapshot_download_cached(**kwargs):
         return snapshot_download(**kwargs)
 
 
-download_path = _snapshot_download_cached(
-    repo_id=REPO_ID,
-    allow_patterns=[f"{MODEL_NAME}/*"],
-    local_dir=DOWNLOAD_DIR,
+def _download_required_files(repo_id: str, filenames: Sequence[str]) -> None:
+    for filename in filenames:
+        target = CHECKPOINTS_DIR / filename
+        if target.is_file():
+            continue
+        try:
+            hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                local_dir=DOWNLOAD_DIR,
+                local_files_only=True,
+            )
+        except Exception:
+            hf_hub_download(repo_id=repo_id, filename=filename, local_dir=DOWNLOAD_DIR)
+
+
+_nninter_model_path = CHECKPOINTS_DIR / MODEL_NAME
+_nninter_checkpoint_ready = _ensure_flat_checkpoint_link(
+    "nnInteractive.pth",
+    _nninter_model_path / "fold_0" / "checkpoint_final.pth",
 )
+if _nninter_checkpoint_ready:
+    _download_required_files(
+        REPO_ID,
+        [
+            f"{MODEL_NAME}/LICENSE",
+            f"{MODEL_NAME}/dataset.json",
+            f"{MODEL_NAME}/inference_session_class.json",
+            f"{MODEL_NAME}/plans.json",
+        ],
+    )
+    download_path = DOWNLOAD_DIR
+else:
+    download_path = _snapshot_download_cached(
+        repo_id=REPO_ID,
+        allow_patterns=[f"{MODEL_NAME}/*"],
+        local_dir=DOWNLOAD_DIR,
+    )
 
 VOX_MODEL_NAME = "voxtell_v1.1"  # Updated models may be available in the future
 vox_model_path = os.path.join(DOWNLOAD_DIR, VOX_MODEL_NAME)
@@ -160,11 +232,21 @@ def _get_vox_predictor():
     """Lazily build (and cache) the VoxTell text-prompt predictor on cuda:0."""
     global _vox_predictor
     if _vox_predictor is None:
-        _snapshot_download_cached(
-            repo_id="mrokuss/VoxTell",
-            allow_patterns=[f"{VOX_MODEL_NAME}/*", "*.json"],
-            local_dir=DOWNLOAD_DIR,
+        vox_checkpoint_ready = _ensure_flat_checkpoint_link(
+            "VoxTell.pth",
+            pathlib.Path(vox_model_path) / "fold_0" / "checkpoint_final.pth",
         )
+        if vox_checkpoint_ready:
+            _download_required_files(
+                "mrokuss/VoxTell",
+                [f"{VOX_MODEL_NAME}/plans.json", "config.json"],
+            )
+        else:
+            _snapshot_download_cached(
+                repo_id="mrokuss/VoxTell",
+                allow_patterns=[f"{VOX_MODEL_NAME}/*", "*.json"],
+                local_dir=DOWNLOAD_DIR,
+            )
         from voxtell.inference.predictor import VoxTellPredictor
         _vox_predictor = VoxTellPredictor(model_dir=vox_model_path, device=torch.device("cuda:0"))
     return _vox_predictor
@@ -394,6 +476,8 @@ def _get_predictor_sam3():
     if not _sam3_checked:
         _sam3_checked = True
         if os.path.exists(sam3_checkpoint):
+            from sam3.model_builder import build_sam3_video_model
+
             sam3_model = build_sam3_video_model(checkpoint_path=sam3_checkpoint)
             _predictor_sam3 = sam3_model.tracker
             _predictor_sam3.backbone = sam3_model.detector.backbone
@@ -1295,14 +1379,14 @@ class BasicInferTask(InferTask):
             # nninter_op == "session_expired".
             logger.warning(f"nninter session expired/missing for op={op!r}")
             if op == "reset":
-                return "/code/predictions/reset.nii.gz", {}
+                return _prediction_path("reset.nii.gz"), {}
             expired_json = {
                 "nninter_op": "session_expired",
                 "label_name": "session_expired",
                 "server_end_ts": time.time(),
             }
             if op == "init":
-                return "/code/predictions/session_expired.nii.gz", expired_json
+                return _prediction_path("session_expired.nii.gz"), expired_json
             return np.zeros((0, 0, 0), dtype=np.uint8), expired_json
         with entry.lock:
             return self._call_core(request, callbacks, entry=entry)
@@ -1345,7 +1429,7 @@ class BasicInferTask(InferTask):
             # clears the interaction state in nnInteractive but retains the encoded image
             # features, so img_np and dicom_dir remain valid for subsequent interactions.
             logger.info("Reset nninter")
-            return f'/code/predictions/reset.nii.gz', {}
+            return _prediction_path("reset.nii.gz"), {}
 
         # Fast path: single-level undo of the last interaction (mirrors reset).
         # Returns the restored target_buffer in the same cropped format as a
@@ -1563,7 +1647,7 @@ class BasicInferTask(InferTask):
                 # Level-3: disk cache — skip reader.Execute + sitk.GetArrayFromImage on hit.
                 # Key: md5(dicom_dir) — stable across container restarts for the same DICOM series.
                 _disk_cache_key = hashlib.md5(dicom_dir.encode()).hexdigest()
-                _disk_cache_path = os.path.join("/code/img_cache", f"{_disk_cache_key}.npy")
+                _disk_cache_path = os.path.join(str(IMG_CACHE_DIR), f"{_disk_cache_key}.npy")
                 if os.path.exists(_disk_cache_path):
                     _t_disk = time.time()
                     # Eager read (single sequential read syscall, ~0.15s warm). Do
@@ -1626,7 +1710,7 @@ class BasicInferTask(InferTask):
                 logger.info(f"[timing] sitk.GetArrayFromImage: {img_convert_elapsed:.3f}s  shape={img_np.shape}  dtype={img_np.dtype}")
                 if _disk_cache_path:
                     try:
-                        os.makedirs("/code/img_cache", exist_ok=True)
+                        IMG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
                         np.save(_disk_cache_path, img_np)
                         logger.info(f"[timing] img_np saved to disk cache  shape={img_np.shape}")
                     except Exception as e:
@@ -1708,7 +1792,7 @@ class BasicInferTask(InferTask):
                 final_result_json["server_init_preprocess_elapsed"] = _init_pre_elapsed  # pre-drain + set_image submit (preprocess overlapped)
                 final_result_json["server_init_reset_elapsed"] = _init_reset_elapsed     # reset_interactions
                 final_result_json["server_end_ts"] = time.time()
-                return f'/code/predictions/init.nii.gz', final_result_json
+                return _prediction_path("init.nii.gz"), final_result_json
 
             logger.info(f"interactions in _session_used_interactions: {used_interactions}")
 
@@ -2229,7 +2313,7 @@ class BasicInferTask(InferTask):
                         if instanceNumber > instanceNumber2:
                             point[2]=img_np.shape[1]-1-point[2]
                         if not _safe_interaction(lambda rp=_rp: session.add_point_interaction(tuple(point[::-1]), include_interaction=True, run_prediction=rp)):
-                            return f'/code/predictions/reset.nii.gz', final_result_json
+                            return _prediction_path("reset.nii.gz"), final_result_json
                         logger.info("Add pos points")
                                 
             if len(data['neg_points'])!=0:
@@ -2242,7 +2326,7 @@ class BasicInferTask(InferTask):
                         if instanceNumber > instanceNumber2:
                             point[2]=img_np.shape[1]-1-point[2]
                         if not _safe_interaction(lambda rp=_rp: session.add_point_interaction(tuple(point[::-1]), include_interaction=False, run_prediction=rp)):
-                            return f'/code/predictions/reset.nii.gz', final_result_json
+                            return _prediction_path("reset.nii.gz"), final_result_json
                         logger.info("Add neg points")
 
             if len(data['pos_boxes'])!=0:
@@ -2266,7 +2350,7 @@ class BasicInferTask(InferTask):
                             include_interaction=True,
                             run_prediction=rp
                         )):
-                            return f'/code/predictions/reset.nii.gz', final_result_json
+                            return _prediction_path("reset.nii.gz"), final_result_json
                         logger.info("Add a box")
 
             if len(data['neg_boxes'])!=0:
@@ -2290,7 +2374,7 @@ class BasicInferTask(InferTask):
                             include_interaction=False,
                             run_prediction=rp
                         )):
-                            return f'/code/predictions/reset.nii.gz', final_result_json
+                            return _prediction_path("reset.nii.gz"), final_result_json
                         logger.info("Add a box")
 
 
@@ -2315,7 +2399,7 @@ class BasicInferTask(InferTask):
                                 img, include_interaction=True, interaction_bbox=bbox, run_prediction=rp
                             )
                         ):
-                            return f'/code/predictions/reset.nii.gz', final_result_json
+                            return _prediction_path("reset.nii.gz"), final_result_json
                         logger.info("Add a lasso")
 
             if len(data['neg_lassos'])!=0:
@@ -2339,7 +2423,7 @@ class BasicInferTask(InferTask):
                                 img, include_interaction=False, interaction_bbox=bbox, run_prediction=rp
                             )
                         ):
-                            return f'/code/predictions/reset.nii.gz', final_result_json
+                            return _prediction_path("reset.nii.gz"), final_result_json
                         logger.info("Add a lasso")
             
             if len(data['pos_scribbles'])!=0:
@@ -2370,13 +2454,13 @@ class BasicInferTask(InferTask):
                                     scribble_image=img, include_interaction=True, interaction_bbox=bbox, run_prediction=rp
                                 )
                             ):
-                                return f'/code/predictions/reset.nii.gz', final_result_json
+                                return _prediction_path("reset.nii.gz"), final_result_json
                         elif not _safe_interaction(
                             lambda img=scribble_image, rp=_rp: session.add_scribble_interaction(
                                 scribble_image=img, include_interaction=True, run_prediction=rp
                             )
                         ):
-                            return f'/code/predictions/reset.nii.gz', final_result_json
+                            return _prediction_path("reset.nii.gz"), final_result_json
                         logger.info(f"only for add scribble: {time.time()-scribble_start} secs")
                         logger.info(f"just after add scribble: {time.time()-start} secs")
                         logger.info("Add a scribble")
@@ -2408,13 +2492,13 @@ class BasicInferTask(InferTask):
                                     scribble_image=img, include_interaction=False, interaction_bbox=bbox, run_prediction=rp
                                 )
                             ):
-                                return f'/code/predictions/reset.nii.gz', final_result_json
+                                return _prediction_path("reset.nii.gz"), final_result_json
                         elif not _safe_interaction(
                             lambda img=scribble_image, rp=_rp: session.add_scribble_interaction(
                                 scribble_image=img, include_interaction=False, run_prediction=rp
                             )
                         ):
-                            return f'/code/predictions/reset.nii.gz', final_result_json
+                            return _prediction_path("reset.nii.gz"), final_result_json
                         logger.info("Add a scribble")
 
             # Safety net for the replay optimization: degenerate prompts (empty
@@ -2427,7 +2511,7 @@ class BasicInferTask(InferTask):
             # on session internals, e.g. _reset_session()).
             if 0 < _applied_count < _pending_total:
                 if not _safe_interaction(lambda: session._predict()):
-                    return f'/code/predictions/reset.nii.gz', final_result_json
+                    return _prediction_path("reset.nii.gz"), final_result_json
 
             dispatch_elapsed = time.time() - _t_dispatch
 
@@ -2532,7 +2616,7 @@ class BasicInferTask(InferTask):
                 predictor_sam3 = _get_predictor_sam3()
                 if predictor_sam3 is None:
                     logger.error(f"SAM3 model not available. Checkpoint not found at {sam3_checkpoint}.")
-                    return f"/code/predictions/sam3_not_found.nii.gz", final_result_json
+                    return _prediction_path("sam3_not_found.nii.gz"), final_result_json
                 else:
                     predictor = predictor_sam3
             else:

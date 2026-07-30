@@ -24,6 +24,7 @@ const PROXY_TARGET = process.env.PROXY_TARGET;
 const PROXY_DOMAIN = process.env.PROXY_DOMAIN;
 const PROXY_PATH_REWRITE_FROM = process.env.PROXY_PATH_REWRITE_FROM;
 const PROXY_PATH_REWRITE_TO = process.env.PROXY_PATH_REWRITE_TO;
+const MONAI_PROXY_DOMAIN = process.env.MONAI_PROXY_DOMAIN || 'http://localhost:8002';
 
 const OHIF_PORT = Number(process.env.OHIF_PORT || 3000);
 const ENTRY_TARGET = process.env.ENTRY_TARGET || `${SRC_DIR}/index.js`;
@@ -155,15 +156,24 @@ module.exports = (env, argv) => {
       client: {
         overlay: { errors: true, warnings: false },
       },
-      proxy: {
-        '/dicomweb': 'http://localhost:5000',
-        '/dicom-microscopy-viewer': {
+      proxy: [
+        {
+          context: '/monai',
+          target: MONAI_PROXY_DOMAIN,
+          changeOrigin: true,
+        },
+        {
+          context: '/dicomweb',
+          target: 'http://localhost:5000',
+        },
+        {
+          context: '/dicom-microscopy-viewer',
           target: 'http://localhost:3000',
           pathRewrite: {
             '^/dicom-microscopy-viewer': `/${PUBLIC_URL}/dicom-microscopy-viewer`,
           },
         },
-      },
+      ],
       static: [
         {
           directory: '../../testdata',
@@ -189,16 +199,14 @@ module.exports = (env, argv) => {
   });
 
   if (hasProxy) {
-    mergedConfig.devServer.proxy = mergedConfig.devServer.proxy || {};
-    mergedConfig.devServer.proxy = {
-      [PROXY_TARGET]: {
-        target: PROXY_DOMAIN,
-        changeOrigin: true,
-        pathRewrite: {
-          [`^${PROXY_PATH_REWRITE_FROM}`]: PROXY_PATH_REWRITE_TO,
-        },
+    mergedConfig.devServer.proxy.push({
+      context: PROXY_TARGET,
+      target: PROXY_DOMAIN,
+      changeOrigin: true,
+      pathRewrite: {
+        [`^${PROXY_PATH_REWRITE_FROM}`]: PROXY_PATH_REWRITE_TO,
       },
-    };
+    });
   }
 
   if (isProdBuild) {
