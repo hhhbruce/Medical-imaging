@@ -11,4 +11,8 @@ export default {
     enabled: true,
     location: viewportActionCornersService.LOCATIONS.topRight,
   },
+  'viewportActionMenu.segmentationOnlyToggle': {
+    enabled: true,
+    location: viewportActionCornersService.LOCATIONS.topRight,
+  },
 };

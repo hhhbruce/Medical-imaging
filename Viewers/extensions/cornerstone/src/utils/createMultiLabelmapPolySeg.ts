@@ -52,6 +52,23 @@ const getLayerVolume = async layer => {
   return cache.getVolume(volumeId);
 };
 
+const hasLabelValue = (scalarData, labelValue) => {
+  if (!scalarData?.length) {
+    return false;
+  }
+
+  for (let index = 0; index < scalarData.length; index++) {
+    if (scalarData[index] === labelValue) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const isRenderableSurface = data =>
+  data?.points?.length >= 3 && data.points.length % 3 === 0 && data?.polys?.length >= 4;
+
 const computeLayerSurface = async (layer, labelValue, segmentIndex) => {
   const volume = await getLayerVolume(layer);
 
@@ -61,6 +78,10 @@ const computeLayerSurface = async (layer, labelValue, segmentIndex) => {
 
   const { dimensions, spacing, origin, direction } = volume;
   const scalarData = volume.voxelManager.getCompleteScalarDataArray();
+
+  if (!hasLabelValue(scalarData, labelValue)) {
+    return { data: null, segmentIndex };
+  }
 
   triggerEvent(eventTarget, CoreEnums.Events.WEB_WORKER_PROGRESS, {
     progress: 0,
@@ -107,13 +128,24 @@ const createSurfaceGeometries = async (segmentationId, surfaces, viewport) => {
   await Promise.all(
     surfaces.map(async ({ data, segmentIndex }) => {
       const geometryId = `segmentation_${segmentationId}_surface_${segmentIndex}`;
-      const color = cornerstoneSegmentation.config.color
-        .getSegmentIndexColor(viewport.id, segmentationId, segmentIndex)
-        .slice(0, 3);
 
       if (cache.getGeometry(geometryId)) {
         cache.removeGeometryLoadObject(geometryId);
       }
+
+      if (!isRenderableSurface(data)) {
+        if (data) {
+          console.warn(
+            `[multiLayerPolySeg] Skipping malformed surface for segment ${segmentIndex}`,
+            data
+          );
+        }
+        return;
+      }
+
+      const color = cornerstoneSegmentation.config.color
+        .getSegmentIndexColor(viewport.id, segmentationId, segmentIndex)
+        .slice(0, 3);
 
       await geometryLoader.createAndCacheGeometry(geometryId, {
         type: CoreEnums.GeometryType.SURFACE,

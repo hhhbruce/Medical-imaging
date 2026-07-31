@@ -3,7 +3,7 @@ import { useResizeDetector } from 'react-resize-detector';
 import * as cs3DTools from '@cornerstonejs/tools';
 import { Enums, eventTarget, getEnabledElement } from '@cornerstonejs/core';
 import { MeasurementService } from '@ohif/core';
-import { AllInOneMenu } from '@ohif/ui-next';
+import { AllInOneMenu, type ViewportActionCornersLocations } from '@ohif/ui-next';
 import { useViewportDialog } from '@ohif/ui-next';
 import type { Types as csTypes } from '@cornerstonejs/core';
 
@@ -17,6 +17,7 @@ import type { Types } from '@ohif/core';
 import OHIFViewportActionCorners from '../components/OHIFViewportActionCorners';
 import { getWindowLevelActionMenu } from '../components/WindowLevelActionMenu/getWindowLevelActionMenu';
 import { getViewportDataOverlaySettingsMenu } from '../components/ViewportDataOverlaySettingMenu';
+import { getSegmentationOnlyToggle } from '../components/ViewportDataOverlaySettingMenu/SegmentationOnlyToggle';
 import { getViewportPresentations } from '../utils/presentations/getViewportPresentations';
 import { useSynchronizersStore } from '../stores/useSynchronizersStore';
 import ActiveViewportBehavior from '../utils/ActiveViewportBehavior';
@@ -327,7 +328,7 @@ const OHIFCornerstoneViewport = React.memo(
       };
     }, [displaySets, elementRef, viewportId, isJumpToMeasurementDisabled, servicesManager]);
 
-    // Set up the window level action menu in the viewport action corners.
+    // Set up viewport-scoped action menus and controls.
     useEffect(() => {
       const windowLevelActionMenu = customizationService.getCustomization(
         'viewportActionMenu.windowLevelActionMenu'
@@ -335,6 +336,13 @@ const OHIFCornerstoneViewport = React.memo(
       const segmentationOverlay = customizationService.getCustomization(
         'viewportActionMenu.segmentationOverlay'
       );
+      const segmentationOnlyToggle = customizationService.getCustomization(
+        'viewportActionMenu.segmentationOnlyToggle'
+      ) as {
+        enabled?: boolean;
+        location: ViewportActionCornersLocations;
+      };
+      const is3DVolumeViewport = viewportOptions.viewportType?.toLowerCase() === 'volume3d';
 
       if (windowLevelActionMenu?.enabled) {
         viewportActionCornersService.addComponent({
@@ -351,6 +359,22 @@ const OHIFCornerstoneViewport = React.memo(
             horizontalDirection: AllInOneMenu.HorizontalDirection.RightToLeft,
           }),
           location: windowLevelActionMenu.location,
+          indexPriority: 0,
+        });
+      }
+
+      if (segmentationOnlyToggle?.enabled && is3DVolumeViewport) {
+        viewportActionCornersService.addComponent({
+          viewportId,
+          id: 'segmentationOnlyToggle',
+          component: getSegmentationOnlyToggle({
+            viewportId,
+            element: elementRef.current,
+            displaySets,
+            servicesManager,
+          }),
+          location: segmentationOnlyToggle.location,
+          indexPriority: 1,
         });
       }
 
@@ -367,9 +391,18 @@ const OHIFCornerstoneViewport = React.memo(
             location: segmentationOverlay.location,
           }),
           location: segmentationOverlay.location,
+          indexPriority: 2,
         });
       }
-    }, [displaySets, viewportId, viewportActionCornersService, servicesManager, commandsManager]);
+    }, [
+      commandsManager,
+      customizationService,
+      displaySets,
+      servicesManager,
+      viewportActionCornersService,
+      viewportId,
+      viewportOptions.viewportType,
+    ]);
 
     const { ref: resizeRef } = useResizeDetector({
       onResize,
