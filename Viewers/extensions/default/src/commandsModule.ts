@@ -1212,7 +1212,8 @@ const commandsModule = ({
       const activeViewportSpecificData = viewports.get(activeViewportId);
 
       const { setViewportGridState } = useViewportGridStore.getState();
-      const currentImageIdIndex = servicesManager.services.cornerstoneViewportService.getCornerstoneViewport(activeViewportId).getCurrentImageIdIndex();
+      const activeViewport = servicesManager.services.cornerstoneViewportService.getCornerstoneViewport(activeViewportId);
+      const currentImageIdIndex = activeViewport.getCurrentImageIdIndex();
       setViewportGridState('currentImageIdIndex', currentImageIdIndex);
       const { displaySetInstanceUIDs } = activeViewportSpecificData;
       const displaySets = displaySetService.activeDisplaySets;
@@ -1304,17 +1305,62 @@ const commandsModule = ({
       const pos_boxes: any[] = [];
       const seriesUID = currentDisplaySets.SeriesInstanceUID;
       const imageIdsSam2: string[] = currentDisplaySets.imageIds ?? [];
+      const imageData = (activeViewport.getImageData?.() as any)?.imageData;
+      const isStackViewport = !(activeViewport instanceof VolumeViewport);
+      const isValidIJK = (point: unknown): point is number[] =>
+        Array.isArray(point) && point.length >= 3 && point.slice(0, 3).every(Number.isFinite);
+      const normalizeIJK = (point: number[], measurement: any): number[] => {
+        const ijk = point.slice(0, 3).map(value => Math.round(value));
+        if (isStackViewport) {
+          const referencedSlice = imageIdsSam2.indexOf(measurement.referencedImageId);
+          if (referencedSlice >= 0) {
+            ijk[2] = referencedSlice;
+          }
+        }
+        return ijk;
+      };
+      const worldToIJK = (point: unknown, measurement: any): number[] | undefined => {
+        if (!imageData || !Array.isArray(point) || point.length < 3) {
+          return;
+        }
+        const ijk = csUtils.transformWorldToIndex(imageData, point as csTypes.Point3);
+        return isValidIJK(ijk) ? normalizeIJK(ijk, measurement) : undefined;
+      };
+
       for (const e of currentMeasurements) {
         if (e.referenceSeriesUID !== seriesUID || e.metadata.SegmentNumber !== segmentNumber) continue;
+
+        const stats = Object.values(e.data ?? {}).find(value => value && typeof value === 'object') as any;
         if (e.toolName === 'Probe2') {
-          (e.metadata.neg ? neg_points : pos_points).push(Object.values(e.data)[0].index);
+          const point = isValidIJK(stats?.index)
+            ? normalizeIJK(stats.index, e)
+            : worldToIJK(e.points?.[0], e);
+          if (point) {
+            (e.metadata.neg ? neg_points : pos_points).push(point);
+          } else {
+            console.warn('Ignoring Probe2 prompt without valid coordinates', e.uid);
+          }
         } else if (e.toolName === 'RectangleROI2' && !e.metadata.neg) {
-          const pts = Object.values(e.data)[0].pointsInShape;
-          const p0 = [...pts.at(0).pointIJK];
-          const p1 = [...pts.at(-1).pointIJK];
-          // Stack viewports: pointsInShape k=0 from 2D imageData; use referencedImageId for correct slice.
-          if (p0[2] === 0) { const refK = imageIdsSam2.indexOf(e.referencedImageId); if (refK > 0) { p0[2] = refK; p1[2] = refK; } }
-          pos_boxes.push([p0, p1]);
+          const pointsInShape = Array.isArray(stats?.pointsInShape) ? stats.pointsInShape : [];
+          const firstPoint = pointsInShape.at(0)?.pointIJK;
+          const lastPoint = pointsInShape.at(-1)?.pointIJK;
+          let corners: number[][] = [];
+
+          if (isValidIJK(firstPoint) && isValidIJK(lastPoint)) {
+            corners = [normalizeIJK(firstPoint, e), normalizeIJK(lastPoint, e)];
+          } else {
+            corners = (e.points ?? [])
+              .map(point => worldToIJK(point, e))
+              .filter((point): point is number[] => point !== undefined);
+          }
+
+          if (corners.length >= 2) {
+            const p0 = [0, 1, 2].map(axis => Math.min(...corners.map(point => point[axis])));
+            const p1 = [0, 1, 2].map(axis => Math.max(...corners.map(point => point[axis])));
+            pos_boxes.push([p0, p1]);
+          } else {
+            console.warn('Ignoring RectangleROI2 prompt without valid coordinates', e.uid);
+          }
         }
       }
 
@@ -1339,6 +1385,7 @@ const commandsModule = ({
           type: 'warning',
           duration: 4000,
         });
+        finishInferenceRun();
         return;
       }
 
@@ -2723,7 +2770,8 @@ const commandsModule = ({
       const activeViewportSpecificData = viewports.get(activeViewportId);
 
       const { setViewportGridState } = useViewportGridStore.getState();
-      const currentImageIdIndex = servicesManager.services.cornerstoneViewportService.getCornerstoneViewport(activeViewportId).getCurrentImageIdIndex();
+      const activeViewport = servicesManager.services.cornerstoneViewportService.getCornerstoneViewport(activeViewportId);
+      const currentImageIdIndex = activeViewport.getCurrentImageIdIndex();
       setViewportGridState('currentImageIdIndex', currentImageIdIndex);
       const { displaySetInstanceUIDs } = activeViewportSpecificData;
 
@@ -2831,25 +2879,79 @@ const commandsModule = ({
       const neg_scribbles: any[] = [];
       const probe2Labels: string[] = [];
       const seriesUID = currentDisplaySets.SeriesInstanceUID;
+      const imageDataForPrompts = (activeViewport.getImageData?.() as any)?.imageData;
+      const isStackViewportForPrompts = !(activeViewport instanceof VolumeViewport);
+      const isValidPromptIJK = (point: unknown): point is number[] =>
+        Array.isArray(point) && point.length >= 3 && point.slice(0, 3).every(Number.isFinite);
+      const normalizePromptIJK = (point: number[], measurement: any): number[] => {
+        const ijk = point.slice(0, 3).map(value => Math.round(value));
+        if (isStackViewportForPrompts) {
+          const referencedSlice = imageIdsForPrompts.indexOf(measurement.referencedImageId);
+          if (referencedSlice >= 0) {
+            ijk[2] = referencedSlice;
+          }
+        }
+        return ijk;
+      };
+      const promptWorldToIJK = (point: unknown, measurement: any): number[] | undefined => {
+        if (!imageDataForPrompts || !Array.isArray(point) || point.length < 3) {
+          return;
+        }
+        const ijk = csUtils.transformWorldToIndex(
+          imageDataForPrompts,
+          point as csTypes.Point3
+        );
+        return isValidPromptIJK(ijk) ? normalizePromptIJK(ijk, measurement) : undefined;
+      };
+
       for (const e of currentMeasurements) {
         if (e.referenceSeriesUID !== seriesUID || e.metadata.SegmentNumber !== segmentNumber) continue;
+
         const isNeg = !!e.metadata.neg;
+        const stats = Object.values(e.data ?? {}).find(
+          value => value && typeof value === 'object'
+        ) as any;
         if (e.toolName === 'Probe2') {
-          (isNeg ? neg_points : pos_points).push(Object.values(e.data)[0].index);
-          if (!isNeg && !textPrompts) probe2Labels.push(e.label);
+          const point = isValidPromptIJK(stats?.index)
+            ? normalizePromptIJK(stats.index, e)
+            : promptWorldToIJK(e.points?.[0], e);
+          if (point) {
+            (isNeg ? neg_points : pos_points).push(point);
+            if (!isNeg && !textPrompts) probe2Labels.push(e.label);
+          } else {
+            console.warn('Ignoring Probe2 prompt without valid coordinates', e.uid);
+          }
         } else if (e.toolName === 'RectangleROI2') {
-          const pts = Object.values(e.data)[0].pointsInShape;
-          const p0 = [...pts.at(0).pointIJK];
-          const p1 = [...pts.at(-1).pointIJK];
-          // Stack viewports: pointsInShape k=0 from 2D imageData; use referencedImageId for correct slice.
-          if (p0[2] === 0) { const refK = imageIdsForPrompts.indexOf(e.referencedImageId); if (refK > 0) { p0[2] = refK; p1[2] = refK; } }
-          (isNeg ? neg_boxes : pos_boxes).push([p0, p1]);
+          const pointsInShape = Array.isArray(stats?.pointsInShape) ? stats.pointsInShape : [];
+          const firstPoint = pointsInShape.at(0)?.pointIJK;
+          const lastPoint = pointsInShape.at(-1)?.pointIJK;
+          let corners: number[][] = [];
+
+          if (isValidPromptIJK(firstPoint) && isValidPromptIJK(lastPoint)) {
+            corners = [normalizePromptIJK(firstPoint, e), normalizePromptIJK(lastPoint, e)];
+          } else {
+            corners = (e.points ?? [])
+              .map(point => promptWorldToIJK(point, e))
+              .filter((point): point is number[] => point !== undefined);
+          }
+
+          if (corners.length >= 2) {
+            const p0 = [0, 1, 2].map(axis =>
+              Math.min(...corners.map(point => point[axis]))
+            );
+            const p1 = [0, 1, 2].map(axis =>
+              Math.max(...corners.map(point => point[axis]))
+            );
+            (isNeg ? neg_boxes : pos_boxes).push([p0, p1]);
+          } else {
+            console.warn('Ignoring RectangleROI2 prompt without valid coordinates', e.uid);
+          }
         } else if (e.toolName === 'PlanarFreehandROI3') {
-          const b = Object.values(e.data)[0]?.boundary;
-          if (b) (isNeg ? neg_lassos : pos_lassos).push(b);
+          const boundary = stats?.boundary;
+          if (boundary) (isNeg ? neg_lassos : pos_lassos).push(boundary);
         } else if (e.toolName === 'PlanarFreehandROI2') {
-          const s = Object.values(e.data)[0]?.scribble;
-          if (s) (isNeg ? neg_scribbles : pos_scribbles).push(s);
+          const scribble = stats?.scribble;
+          if (scribble) (isNeg ? neg_scribbles : pos_scribbles).push(scribble);
         }
       }
       //VoxTell - Use provided textPrompts or extract from measurements

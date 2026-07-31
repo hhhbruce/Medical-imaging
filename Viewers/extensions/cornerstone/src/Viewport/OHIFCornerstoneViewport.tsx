@@ -21,6 +21,7 @@ import { getViewportPresentations } from '../utils/presentations/getViewportPres
 import { useSynchronizersStore } from '../stores/useSynchronizersStore';
 import ActiveViewportBehavior from '../utils/ActiveViewportBehavior';
 import { WITH_NAVIGATION } from '../services/ViewportService/CornerstoneViewportService';
+import { hydrateExistingSegmentations } from '../services/SyncGroupService/createHydrateSegmentationSynchronizer';
 
 const STACK = 'stack';
 
@@ -242,6 +243,25 @@ const OHIFCornerstoneViewport = React.memo(
         unsubscribe();
       };
     }, [viewportId]);
+
+    useEffect(() => {
+      const { unsubscribe } = cornerstoneViewportService.subscribe(
+        cornerstoneViewportService.EVENTS.VIEWPORT_DATA_CHANGED,
+        ({ viewportId: changedViewportId }) => {
+          if (changedViewportId !== viewportId) {
+            return;
+          }
+
+          const viewport = cornerstoneViewportService.getCornerstoneViewport(viewportId);
+
+          if (viewport?.type === Enums.ViewportType.VOLUME_3D) {
+            void hydrateExistingSegmentations(viewportId, servicesManager);
+          }
+        }
+      );
+
+      return () => unsubscribe();
+    }, [viewportId, cornerstoneViewportService, servicesManager]);
 
     useEffect(() => {
       // handle the default viewportType to be stack

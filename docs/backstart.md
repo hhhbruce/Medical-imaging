@@ -4,6 +4,8 @@
 
 启动顺序：**Orthanc → MONAI Label 后端 → OHIF 前端**。三个服务建议分别使用独立的 PowerShell 终端。
 
+基础查看器页面和工具说明见 [`basic-viewer-user-guide.md`](./basic-viewer-user-guide.md)。
+
 ## 1. 启动 Orthanc
 
 ```powershell

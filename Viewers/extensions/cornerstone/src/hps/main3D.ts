@@ -74,6 +74,7 @@ export const main3D = {
             customViewportProps: {
               hideOverlays: true,
             },
+            syncGroups: [HYDRATE_SEG_SYNC_GROUP],
           },
           displaySets: [
             {

@@ -41,10 +41,10 @@ import {
   RegionSegmentPlusTool,
 } from '@cornerstonejs/tools';
 import { LabelmapSlicePropagationTool, MarkerLabelmapTool } from '@cornerstonejs/ai';
-import * as polySeg from '@cornerstonejs/polymorphic-segmentation';
 
 import CalibrationLineTool from './tools/CalibrationLineTool';
 import ImageOverlayViewerTool from './tools/ImageOverlayViewerTool';
+import { multiLayerPolySeg } from './utils/createMultiLabelmapPolySeg';
 
 class Probe2Tool extends ProbeTool {}
 Probe2Tool.toolName = 'Probe2';
@@ -81,7 +81,7 @@ export default function initCornerstoneTools(configuration = {}) {
 
   init({
     addons: {
-      polySeg,
+      polySeg: multiLayerPolySeg,
     },
     computeWorker: {
       autoTerminateOnIdle: {

@@ -1,6 +1,7 @@
 import math
 import numpy as np
 import signal
+import threading
 from contextlib import contextmanager
 
 def clean_and_densify_polyline(polyline, max_segment_length=1):
@@ -377,13 +378,19 @@ class TimeoutError(Exception):
 
 @contextmanager
 def timeout_context(seconds):
-    """Context manager for timeout protection using signal.alarm"""
+    """Apply a signal timeout where SIGALRM is supported and usable."""
+    supports_alarm = hasattr(signal, "SIGALRM") and hasattr(signal, "alarm")
+    is_main_thread = threading.current_thread() is threading.main_thread()
+    if not supports_alarm or not is_main_thread:
+        yield
+        return
+
     def timeout_handler(signum, frame):
         raise TimeoutError(f"Operation timed out after {seconds} seconds")
-    
+
     old_handler = signal.signal(signal.SIGALRM, timeout_handler)
     signal.alarm(seconds)
-    
+
     try:
         yield
     finally:
