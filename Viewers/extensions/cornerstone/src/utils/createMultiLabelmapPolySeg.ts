@@ -13,6 +13,50 @@ const { SegmentationRepresentations, WorkerTypes } = ToolsEnums;
 const workerManager = getWebWorkerManager();
 const surfaceComputationRequests = new Map<string, Promise<{ geometryIds: Map<number, string> }>>();
 
+// Content-addressed cache: labelmap data is only recomputed when its voxel
+// content actually changes. Scrolling slices / re-rendering re-enters
+// updateSurfaceData without touching the labelmap, so the cached Surface
+// geometries are reused instead of re-running the polySeg worker.
+const surfaceContentCache = new Map<
+  string,
+  { fingerprint: string; geometryIds: Map<number, string> }
+>();
+
+const computeLabelmapFingerprint = async labelmapData => {
+  const layers = getLabelmapLayers(labelmapData);
+  const parts: string[] = [];
+
+  for (const layer of layers) {
+    try {
+      const volume = await getLayerVolume(layer);
+
+      if (!volume) {
+        continue;
+      }
+
+      const scalarData = volume.voxelManager.getCompleteScalarDataArray();
+      let hash1 = 0;
+      let hash2 = 0;
+      const step = Math.max(1, Math.floor(scalarData.length / 2048));
+
+      for (let index = 0; index < scalarData.length; index += step) {
+        const value = scalarData[index];
+        hash1 = (hash1 * 31 + value) | 0;
+        hash2 = (hash2 * 17 + (value >>> 8)) | 0;
+      }
+
+      parts.push(`${volume.volumeId}:${scalarData.length}:${hash1}:${hash2}`);
+    } catch {
+      parts.push(`${layer.volumeId ?? layer.geometryVolumeId ?? layer.labelmapId}:unavailable`);
+    }
+  }
+
+  return parts.join('|');
+};
+
+const geometryIdsStillCached = geometryIds =>
+  [...geometryIds.values()].every(geometryId => !!cache.getGeometry(geometryId));
+
 const getLabelmapLayers = labelmapData => Object.values(labelmapData?.labelmaps ?? {});
 
 const isMultiLayerLabelmap = labelmapData => getLabelmapLayers(labelmapData).length > 1;
@@ -166,9 +210,11 @@ const createSurfaceGeometries = async (segmentationId, surfaces, viewport) => {
 };
 
 const computeMultiLayerSurfaceDataInternal = async (segmentationId, options = {}) => {
+  const { labelmapData: labelmapDataOverride, viewport } = options;
   const segmentation = cornerstoneSegmentation.state.getSegmentation(segmentationId);
-  const labelmapData = segmentation?.representationData?.[SegmentationRepresentations.Labelmap];
-  const viewport = options.viewport;
+  const labelmapData =
+    labelmapDataOverride ??
+    segmentation?.representationData?.[SegmentationRepresentations.Labelmap];
 
   if (!segmentation || !labelmapData || !viewport) {
     throw new Error(`Missing segmentation, labelmap data, or viewport for ${segmentationId}`);
@@ -196,7 +242,31 @@ const computeMultiLayerSurfaceData = async (segmentationId, options = {}) => {
     return pendingRequest;
   }
 
-  const request = computeMultiLayerSurfaceDataInternal(segmentationId, options);
+  const request = (async () => {
+    const segmentation = cornerstoneSegmentation.state.getSegmentation(segmentationId);
+    const labelmapData = segmentation?.representationData?.[SegmentationRepresentations.Labelmap];
+
+    if (!segmentation || !labelmapData) {
+      throw new Error(`Missing segmentation or labelmap data for ${segmentationId}`);
+    }
+
+    const fingerprint = await computeLabelmapFingerprint(labelmapData);
+    const cached = surfaceContentCache.get(segmentationId);
+
+    if (cached?.fingerprint === fingerprint && geometryIdsStillCached(cached.geometryIds)) {
+      return { geometryIds: cached.geometryIds };
+    }
+
+    const { geometryIds } = await computeMultiLayerSurfaceDataInternal(segmentationId, {
+      ...options,
+      labelmapData,
+    });
+
+    surfaceContentCache.set(segmentationId, { fingerprint, geometryIds });
+
+    return { geometryIds };
+  })();
+
   surfaceComputationRequests.set(segmentationId, request);
 
   try {
