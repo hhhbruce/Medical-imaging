@@ -32,8 +32,12 @@ Invoke-RestMethod "http://localhost:8042/system"
 ```powershell
 Set-Location "D:\Smart City\Medical-imaging"
 
+# PYTHONPATH 必需：monailabel 未 pip 安装到 conda 环境，靠它解析本地源码
 $env:PYTHONPATH = "D:\Smart City\Medical-imaging\monai-label"
+# 模型中央目录：须包含 sam2.1_hiera_tiny.pt、MedSAM2_latest.pt、sam3.pt、
+# nnInteractive.pth、vox_v1.1/ 等权重（文件名须与 basic_infer.py 一致）
 $env:MONAI_LABEL_CHECKPOINTS_DIR = "D:\Smart City\checkpoints"
+# 运行时产物目录：predictions/、img_cache/ 会创建在这里
 $env:MONAI_LABEL_RUNTIME_DIR = "D:\Smart City\Medical-imaging\monai-label"
 
 $env:LOAD_SAM2 = "lazy"
@@ -55,6 +59,16 @@ conda run --no-capture-output -n smartcity python -u -m monailabel.main start_se
 
 ```powershell
 Invoke-RestMethod "http://localhost:8002/info"
+```
+
+如果启动失败，先确认 8002 端口没有被旧的 MONAI 进程占用（新进程会 bind 失败）：
+
+```powershell
+Get-NetTCPConnection -LocalPort 8002 -State Listen | ForEach-Object {
+  Get-CimInstance Win32_Process -Filter "ProcessId = $($_.OwningProcess)" |
+    Select-Object ProcessId, CreationDate, CommandLine
+}
+# 确认是残留的旧进程后停止：Stop-Process -Id <PID>
 ```
 
 服务地址：

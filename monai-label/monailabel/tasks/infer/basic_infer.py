@@ -1677,6 +1677,11 @@ class BasicInferTask(InferTask):
                                 logger.warning(f"Failed to rewrite disk cache as float32: {e}")
 
                         threading.Thread(target=_rewrite_cache, daemon=True).start()
+                    # SAM2/VLM 分支需要 SimpleITK Image（img.GetSize / init_state），
+                    # 而缓存命中时 reader.Execute() 被跳过、img 仍是 None。
+                    # GetImageFromArray/GetArrayFromImage 互逆，重建后 SAM2 拿到的
+                    # numpy 数组方向与原始 reader.Execute() 链路完全一致。
+                    img = sitk.GetImageFromArray(img_np[0])
                     logger.info(f"[timing] img_np disk cache hit: {time.time()-_t_disk:.3f}s  shape={img_np.shape}  dtype={img_np.dtype}")
                 else:
                     reader.SetFileNames(dicom_filenames)
