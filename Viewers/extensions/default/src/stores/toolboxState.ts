@@ -98,12 +98,12 @@ export const toolboxState = {
   setRefineNew: (enabled: boolean) => {
     refineNew = enabled;
     if (enabled) {
-        // Note: resetNninter should be called from the component/command that uses this state
-         // When RefineNew is enabled and model is nnInteractive, reset nninter
-         if (selectedModel === 'nnInteractive') {
-          commandsManager?.run('resetNninter');
-        }
-        toolboxState.setPosNeg(false);
+      // Note: resetNninter should be called from the component/command that uses this state
+      // When RefineNew is enabled and model is nnInteractive, reset nninter
+      if (selectedModel === 'nnInteractive') {
+        commandsManager?.run('resetNninter');
+      }
+      toolboxState.setPosNeg(false);
     }
   },
   getTextPromptReplaceNew: () => textPromptReplaceNew,
@@ -196,8 +196,7 @@ export const toolboxState = {
   setClaudeModel: (model: string) => {
     claudeModel = model;
   },
-  getClaudeThinkingEffort: (): '' | 'low' | 'medium' | 'high' | 'max' =>
-    claudeThinkingEffort,
+  getClaudeThinkingEffort: (): '' | 'low' | 'medium' | 'high' | 'max' => claudeThinkingEffort,
   setClaudeThinkingEffort: (level: '' | 'low' | 'medium' | 'high' | 'max') => {
     claudeThinkingEffort = level;
   },

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import json
 import logging
 import os
 import time
@@ -102,8 +103,30 @@ from PIL import Image
 #from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection 
 
 _PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+
+def _find_local_checkpoints_dir() -> pathlib.Path:
+    """Find the central checkpoint directory used by local development.
+
+    The local workspace keeps shared weights in ``D:/Smart City/checkpoints``
+    rather than under ``Medical-imaging/monai-label``.  Keep the latter as a
+    fallback so the source tree remains usable when it is self-contained.
+    """
+    candidates = (
+        _PROJECT_ROOT.parent.parent / "checkpoints",  # workspace/checkpoints
+        _PROJECT_ROOT / "checkpoints",  # project-local fallback
+    )
+    for candidate in candidates:
+        if (
+            (candidate / "nnInteractive.pth").is_file()
+            or (candidate / "nnInteractive_v1.0" / "fold_0" / "checkpoint_final.pth").is_file()
+        ):
+            return candidate
+    return candidates[0]
+
+
 CHECKPOINTS_DIR = pathlib.Path(
-    os.environ.get("MONAI_LABEL_CHECKPOINTS_DIR", _PROJECT_ROOT / "checkpoints")
+    os.environ.get("MONAI_LABEL_CHECKPOINTS_DIR", _find_local_checkpoints_dir())
 ).expanduser().resolve()
 RUNTIME_DIR = pathlib.Path(
     os.environ.get("MONAI_LABEL_RUNTIME_DIR", _PROJECT_ROOT)
@@ -315,8 +338,34 @@ _artifact_loader = nnInteractiveInferenceSession(
     torch_n_threads=8,
     do_autozoom=True,
 )
+
+
+def _merge_nninter_session_metadata(artifacts: Dict[str, Any]) -> Dict[str, Any]:
+    """Restore session-only metadata omitted by some nnInteractive loaders."""
+    metadata_file = pathlib.Path(model_path) / "inference_session_class.json"
+    try:
+        with metadata_file.open("r", encoding="utf-8") as stream:
+            metadata = json.load(stream)
+    except (OSError, ValueError) as error:
+        logger.warning("Could not read nnInteractive session metadata %s: %s", metadata_file, error)
+        metadata = {}
+
+    # nnInteractive 2.5.1 indexes this field directly during session creation.
+    # The packaged metadata contains the value, but older loader combinations
+    # can omit it from the dictionary returned by _load_model_artifacts_from_disk.
+    if "preferred_scribble_thickness" not in artifacts:
+        artifacts["preferred_scribble_thickness"] = metadata.get(
+            "preferred_scribble_thickness", 2
+        )
+    if "point_radius" not in artifacts and "point_radius" in metadata:
+        artifacts["point_radius"] = metadata["point_radius"]
+    return artifacts
+
+
 try:
-    _NNINTER_ARTIFACTS = _artifact_loader._load_model_artifacts_from_disk(model_path)
+    _NNINTER_ARTIFACTS = _merge_nninter_session_metadata(
+        _artifact_loader._load_model_artifacts_from_disk(model_path)
+    )
 except FileNotFoundError as err:
     # VLM-only requests use the same inference task but do not need the
     # nnInteractive weights. Defer the missing-checkpoint failure until an
@@ -328,6 +377,28 @@ except FileNotFoundError as err:
     _NNINTER_ARTIFACTS = {}
 
 
+def _nninter_artifacts_ready() -> bool:
+    """Return whether the loaded checkpoint metadata can initialise a session.
+
+    VLM-only requests do not need an nnInteractive session.  Some deployments
+    intentionally omit the checkpoint, and older/newer checkpoint packages can
+    also omit metadata expected by the installed nnInteractive version.
+    """
+    required = (
+        "configuration_manager",
+        "network",
+        "preferred_scribble_thickness",
+    )
+    missing = [key for key in required if key not in _NNINTER_ARTIFACTS]
+    if missing:
+        logger.warning(
+            "nnInteractive session initialisation skipped; missing artifact keys: %s",
+            ", ".join(missing),
+        )
+        return False
+    return True
+
+
 def _new_nninter_session() -> nnInteractiveInferenceSession:
     s = nnInteractiveInferenceSession(
         device=torch.device("cuda:0"),
@@ -336,7 +407,8 @@ def _new_nninter_session() -> nnInteractiveInferenceSession:
         torch_n_threads=8,  # see _artifact_loader above
         do_autozoom=True,
     )
-    s.initialize_from_loaded_artifacts(_NNINTER_ARTIFACTS)
+    if _nninter_artifacts_ready():
+        s.initialize_from_loaded_artifacts(_NNINTER_ARTIFACTS)
     return s
 
 
@@ -549,8 +621,8 @@ def ensure_interactive_model_ready(model: str) -> Dict[str, Any]:
     cached side by side, and each inference request names the model it needs.
     """
     if model == "nnInteractive":
-        if not _NNINTER_ARTIFACTS:
-            raise RuntimeError("nnInteractive model artifacts are not loaded")
+        if not _nninter_artifacts_ready():
+            raise RuntimeError("nnInteractive model artifacts are unavailable or incompatible")
         get_pool()
         return {
             "model": model,
@@ -2170,7 +2242,15 @@ class BasicInferTask(InferTask):
                             instanceNumber2,
                         )
                     )
-                    logger.info(f"normalized_img_list count: {len(normalized_img_list)}")
+                    final_result_json["vlm_slice_count"] = len(normalized_img_list)
+                    final_result_json["vlm_slice_indices"] = [idx + 1 for idx in slice_indices]
+                    logger.info(
+                        "VLM input slices: count=%s, indices=%s, requested_range=(%s, %s)",
+                        len(normalized_img_list),
+                        [idx + 1 for idx in slice_indices],
+                        data.get("startSlice"),
+                        data.get("endSlice"),
+                    )
 
                     if nnInter == "custom":
                         response_text = _custom_run(

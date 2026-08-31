@@ -128,10 +128,7 @@ const commandsModule = ({
     const selectedModel = toolboxState.getSelectedModel();
     if (selectedModel === 'nnInteractive') {
       commandsManager.run('nninter');
-    } else if (
-      selectedModel === 'sam2' ||
-      selectedModel === 'medsam2'
-    ) {
+    } else if (selectedModel === 'sam2' || selectedModel === 'medsam2') {
       commandsManager.run('sam2');
     }
   }
@@ -2947,8 +2944,7 @@ const commandsModule = ({
     }) {
       const baseUrl = (options?.customBaseUrl ?? toolboxState.getCustomBaseUrl()).trim();
       const apiKey = (options?.customApiKey ?? toolboxState.getCustomApiKey()).trim();
-      const endpointType =
-        options?.customEndpointType ?? toolboxState.getCustomEndpointType();
+      const endpointType = options?.customEndpointType ?? toolboxState.getCustomEndpointType();
       const url = `/monai/infer/vlm/models`;
       const response = await axios.post(url, {
         base_url: baseUrl,
@@ -2965,6 +2961,8 @@ const commandsModule = ({
       customEndpointType?: CustomEndpointType;
       customModel?: string;
       customMasStrategy?: CustomMasStrategy;
+      startSlice?: number | null;
+      endSlice?: number | null;
     }) {
       const { activeViewportId, viewports } = viewportGridService.getState();
       const activeViewportSpecificData = viewports.get(activeViewportId);
@@ -2982,11 +2980,11 @@ const commandsModule = ({
 
       const baseUrl = (options?.customBaseUrl ?? toolboxState.getCustomBaseUrl()).trim();
       const apiKey = (options?.customApiKey ?? toolboxState.getCustomApiKey()).trim();
-      const endpointType =
-        options?.customEndpointType ?? toolboxState.getCustomEndpointType();
+      const endpointType = options?.customEndpointType ?? toolboxState.getCustomEndpointType();
       const model = (options?.customModel ?? toolboxState.getCustomModel()).trim();
-      const masStrategy =
-        options?.customMasStrategy ?? toolboxState.getCustomMasStrategy();
+      const masStrategy = options?.customMasStrategy ?? toolboxState.getCustomMasStrategy();
+      const startSlice = options?.startSlice;
+      const endSlice = options?.endSlice;
       const query = options?.query ?? '';
       const instruction = options?.instruction;
 
@@ -3005,6 +3003,8 @@ const commandsModule = ({
         custom_model: model,
         mas_strategy: masStrategy,
         mas_rounds: masStrategy === 'discussion' ? 2 : undefined,
+        startSlice: startSlice !== null && startSlice !== undefined ? startSlice : undefined,
+        endSlice: endSlice !== null && endSlice !== undefined ? endSlice : undefined,
       };
 
       const data = MonaiLabelClient.constructFormData(params, null);
@@ -3839,8 +3839,7 @@ const commandsModule = ({
       const customEndpointType =
         options?.customEndpointType ?? toolboxState.getCustomEndpointType();
       const customModel = options?.customModel ?? toolboxState.getCustomModel();
-      const customMasStrategy =
-        options?.customMasStrategy ?? toolboxState.getCustomMasStrategy();
+      const customMasStrategy = options?.customMasStrategy ?? toolboxState.getCustomMasStrategy();
       const medgemmaVariant = options?.medgemmaVariant ?? toolboxState.getMedgemmaVariant();
       const medgemmaThinkingEnabled =
         options?.medgemmaThinkingEnabled ?? toolboxState.getMedgemmaThinkingEnabled();
@@ -3966,6 +3965,8 @@ const commandsModule = ({
             customEndpointType,
             customModel,
             customMasStrategy,
+            startSlice,
+            endSlice,
           });
         } else {
           response = await actions.medGemma(
@@ -3988,8 +3989,7 @@ const commandsModule = ({
       } catch (error) {
         console.error('VLM request error:', error);
         let message = error instanceof Error ? error.message : 'Unknown error';
-        const responseData = (error as { response?: { data?: unknown } })?.response
-          ?.data;
+        const responseData = (error as { response?: { data?: unknown } })?.response?.data;
         if (typeof responseData === 'string' && responseData.trim()) {
           try {
             const parsed = JSON.parse(responseData);

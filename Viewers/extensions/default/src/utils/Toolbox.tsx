@@ -169,12 +169,14 @@ export function Toolbox({
         customBaseUrl: customBaseUrl?.trim(),
         customApiKey: customApiKey?.trim(),
         customEndpointType,
-      })) as {
-        models?: string[];
-        vision_models?: string[];
-        vision_capabilities_known?: boolean;
-        error?: string;
-      } | undefined;
+      })) as
+        | {
+            models?: string[];
+            vision_models?: string[];
+            vision_capabilities_known?: boolean;
+            error?: string;
+          }
+        | undefined;
       if (result?.error) {
         setCustomModelsError(result.error);
         setCustomModels([]);
@@ -613,7 +615,7 @@ export function Toolbox({
     <PanelSection
       key={isAIToolBox ? `toolbox-${isLocked}` : buttonSectionId}
       defaultOpen={defaultOpen && !shouldCollapse}
-      className="mx-2 mb-2 rounded-lg border border-border/80 bg-card/80 shadow-[0_2px_8px_rgba(0,0,0,0.16)] first:mt-2"
+      className="border-border/80 bg-card/80 mx-2 mb-2 rounded-lg border shadow-[0_2px_8px_rgba(0,0,0,0.16)] first:mt-2"
     >
       <PanelSection.Header className="flex items-center justify-between">
         <span
@@ -899,7 +901,7 @@ export function Toolbox({
                           toolboxState.setMedgemmaInstruction(value);
                         }}
                         placeholder="输入指令（例如：'你是一位指导医学生的教师…'）"
-                        className="bg-input/30 border border-input placeholder:text-muted-foreground min-h-[60px] resize-y rounded p-2 text-sm text-foreground"
+                        className="bg-input/30 border-input placeholder:text-muted-foreground text-foreground min-h-[60px] resize-y rounded border p-2 text-sm"
                       />
                     </div>
                     <div className="flex flex-col gap-2">
@@ -918,7 +920,7 @@ export function Toolbox({
                           toolboxState.setMedgemmaQuery(value);
                         }}
                         placeholder="输入你的查询/问题"
-                        className="bg-input/30 border border-input placeholder:text-muted-foreground min-h-[60px] resize-y rounded p-2 text-sm text-foreground"
+                        className="bg-input/30 border-input placeholder:text-muted-foreground text-foreground min-h-[60px] resize-y rounded border p-2 text-sm"
                       />
                     </div>
                     <div className="flex flex-col gap-2">
@@ -943,7 +945,7 @@ export function Toolbox({
                               toolboxState.setMedgemmaStartSlice(value);
                             }}
                             placeholder="1"
-                            className="bg-input/30 border border-input placeholder:text-muted-foreground rounded p-2 text-sm text-foreground"
+                            className="bg-input/30 border-input placeholder:text-muted-foreground text-foreground rounded border p-2 text-sm"
                           />
                         </div>
                         <div className="flex flex-1 flex-col gap-1">
@@ -965,7 +967,7 @@ export function Toolbox({
                               toolboxState.setMedgemmaEndSlice(value);
                             }}
                             placeholder="总切片数"
-                            className="bg-input/30 border border-input placeholder:text-muted-foreground rounded p-2 text-sm text-foreground"
+                            className="bg-input/30 border-input placeholder:text-muted-foreground text-foreground rounded border p-2 text-sm"
                           />
                         </div>
                       </div>
@@ -1036,7 +1038,7 @@ export function Toolbox({
                               toolboxState.setGeminiModel(v);
                             }}
                             placeholder="例如 gemini-3-flash-preview"
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                         </div>
                         <div className="flex flex-col gap-2">
@@ -1090,7 +1092,7 @@ export function Toolbox({
                               toolboxState.setOpenaiModel(v);
                             }}
                             placeholder="例如 gpt-5.4"
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                         </div>
                         <div className="flex flex-col gap-2">
@@ -1110,7 +1112,7 @@ export function Toolbox({
                               toolboxState.setOpenaiReasoningEffort(v);
                             }}
                             placeholder="无、低、中、高（取决于模型）"
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                         </div>
                       </>
@@ -1134,7 +1136,7 @@ export function Toolbox({
                               toolboxState.setClaudeModel(v);
                             }}
                             placeholder="例如 claude-sonnet-4-20250514"
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                         </div>
                         <div className="flex flex-col gap-2">
@@ -1191,7 +1193,7 @@ export function Toolbox({
                               toolboxState.setKimiModel(v);
                             }}
                             placeholder="例如 moonshotai/Kimi-K2.5:novita"
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-4 py-1">
@@ -1231,7 +1233,7 @@ export function Toolbox({
                               toolboxState.setQwenModel(v);
                             }}
                             placeholder="例如 Qwen/Qwen3.5-397B-A17B:novita"
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-4 py-1">
@@ -1271,7 +1273,7 @@ export function Toolbox({
                               toolboxState.setGemmaModel(v);
                             }}
                             placeholder="例如 google/gemma-4-31B-it:novita"
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                         </div>
                         <div className="flex items-center justify-between gap-4 py-1">
@@ -1311,7 +1313,7 @@ export function Toolbox({
                               toolboxState.setVllmBaseUrl(v);
                             }}
                             placeholder="http://host.docker.internal:8000/v1"
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                         </div>
                         <div className="flex flex-col gap-2">
@@ -1425,7 +1427,10 @@ export function Toolbox({
                               toolboxState.setCustomMasStrategy(strategy);
                             }}
                           >
-                            <SelectTrigger id="custom-mas-strategy" className="w-full">
+                            <SelectTrigger
+                              id="custom-mas-strategy"
+                              className="w-full"
+                            >
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1460,7 +1465,7 @@ export function Toolbox({
                                 ? 'https://api.anthropic.com'
                                 : 'https://your-relay.example.com/v1'
                             }
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                           <p className="text-muted-foreground text-xs">
                             {customEndpointType === 'anthropic'
@@ -1485,7 +1490,7 @@ export function Toolbox({
                               toolboxState.setCustomApiKey(v);
                             }}
                             placeholder="sk-..."
-                            className="bg-input/30 border border-input text-sm text-foreground"
+                            className="bg-input/30 border-input text-foreground border text-sm"
                           />
                         </div>
                         <div className="flex flex-col gap-2">
@@ -1499,7 +1504,7 @@ export function Toolbox({
                             {customModelsLoading ? '获取中…' : '获取模型列表'}
                           </Button>
                           {customModelsError && (
-                            <p className="text-destructive text-xs break-all">
+                            <p className="text-destructive break-all text-xs">
                               {customModelsError}
                             </p>
                           )}
@@ -1534,7 +1539,10 @@ export function Toolbox({
                             </SelectTrigger>
                             <SelectContent>
                               {customModels.map(model => (
-                                <SelectItem key={model} value={model}>
+                                <SelectItem
+                                  key={model}
+                                  value={model}
+                                >
                                   {model}
                                   {customVisionCapabilitiesKnown
                                     ? customVisionModels.includes(model)
