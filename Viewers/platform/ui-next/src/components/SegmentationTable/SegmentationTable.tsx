@@ -106,7 +106,10 @@ export const SegmentationTableRoot = (props: SegmentationTableProps) => {
         setShowConfig: toggleShowConfig,
       }}
     >
-      <PanelSection defaultOpen={true}>
+      <PanelSection
+        defaultOpen={true}
+        className="mx-2 mb-2 rounded-lg border border-border/80 bg-card/80 shadow-[0_2px_8px_rgba(0,0,0,0.16)] first:mt-2"
+      >
         <PanelSection.Header className="flex items-center justify-between">
           <span>{t(title)}</span>
           {hasConfigComponent && (

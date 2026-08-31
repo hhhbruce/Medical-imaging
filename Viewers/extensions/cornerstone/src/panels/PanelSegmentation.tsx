@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { SegmentationTable } from '@ohif/ui-next';
+import { SegmentationTable, Icons } from '@ohif/ui-next';
 import { useActiveViewportSegmentationRepresentations } from '../hooks/useActiveViewportSegmentationRepresentations';
 import { metaData } from '@cornerstonejs/core';
 import { useSystem } from '@ohif/core/src';
@@ -109,14 +109,14 @@ export default function PanelSegmentation({ children }: withAppTypes) {
       });
 
       uiNotificationService.show({
-        title: `Deleting ${segmentIndex}`,
-        message: `Deleting segment ${segmentIndex}...`,
+        title: `正在删除 ${segmentIndex}`,
+        message: `正在删除分段 ${segmentIndex}...`,
         type: 'info',
         promise: deletePromise,
         promiseMessages: {
-          loading: `Deleting ${segmentIndex}...`,
-          success: () => `Deleted ${segmentIndex} successfully`,
-          error: error => `Delete ${segmentIndex} failed: ${error?.message || 'Unknown error'}`,
+          loading: `正在删除 ${segmentIndex}...`,
+          success: () => `已成功删除分段 ${segmentIndex}`,
+          error: error => `删除分段 ${segmentIndex} 失败：${error?.message || '未知错误'}`,
         },
       });
     },
@@ -238,7 +238,7 @@ export default function PanelSegmentation({ children }: withAppTypes) {
     disabled,
     data: segmentationsWithRepresentations,
     mode: segmentationTableMode,
-    title: 'Segmentations',
+    title: '分割结果',
     exportOptions,
     disableEditing,
     onSegmentationAdd,
@@ -261,6 +261,21 @@ export default function PanelSegmentation({ children }: withAppTypes) {
 
   // Render content based on mode
   const renderModeContent = () => {
+    // 空状态：尚未创建任何分割时显示引导提示，避免大范围空白。
+    if (tableProps.data.length === 0) {
+      return (
+        <div className="border-border bg-muted/30 m-3 flex flex-col items-center gap-2 rounded-lg border border-dashed p-6 text-center">
+          <Icons.TabSegmentation className="text-muted-foreground/60 h-8 w-8" />
+          <p className="text-muted-foreground text-sm font-medium">暂无分割结果</p>
+          <p className="text-muted-foreground/70 text-xs">
+            使用上方「交互式分割」或「手动分割」工具
+            <br />
+            在影像上绘制提示即可创建第一个分割
+          </p>
+        </div>
+      );
+    }
+
     if (tableProps.mode === 'collapsed') {
       return (
         <SegmentationTable.Collapsed>

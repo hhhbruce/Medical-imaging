@@ -1,7 +1,6 @@
 import React from 'react';
 import { PanelSection } from '../PanelSection';
 import { useSegmentationTableContext, SegmentationExpandedProvider } from './contexts';
-import { useTranslation } from 'react-i18next';
 import {
   Button,
   Icons,
@@ -20,7 +19,7 @@ import {
 // Main header component
 const SegmentationCollapsedHeader = ({ children }: { children: React.ReactNode }) => {
   return (
-    <div className="bg-primary-dark flex h-10 w-full items-center space-x-1 rounded-t px-1.5">
+    <div className="bg-blue-50 flex h-10 w-full items-center space-x-1 rounded-t px-1.5">
       {children}
     </div>
   );
@@ -45,7 +44,6 @@ const SegmentationCollapsedDropdownMenu = ({ children }: { children: React.React
 
 // Selector component - for the segmentation selection dropdown
 const SegmentationCollapsedSelector = () => {
-  const { t } = useTranslation('SegmentationTable.HeaderCollapsed');
   const { data, activeSegmentationId, onSegmentationClick } = useSegmentationTableContext(
     'SegmentationCollapsedSelector'
   );
@@ -65,7 +63,7 @@ const SegmentationCollapsedSelector = () => {
       value={activeSegmentationId}
     >
       <SelectTrigger className="w-full overflow-hidden">
-        <SelectValue placeholder={t('Select a segmentation')} />
+        <SelectValue placeholder="选择分割" />
       </SelectTrigger>
       <SelectContent>
         {segmentations.map(seg => (

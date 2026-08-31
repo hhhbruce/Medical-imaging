@@ -1,5 +1,4 @@
 import React from 'react';
-import { useTranslation } from 'react-i18next';
 import { Tabs, TabsList, TabsTrigger } from '../Tabs';
 import { Slider } from '../Slider';
 import { Icons } from '../Icons';
@@ -9,7 +8,6 @@ import { Input } from '../Input';
 import { useSegmentationTableContext } from './contexts';
 
 export const SegmentationTableConfig: React.FC<{ children?: React.ReactNode }> = ({ children }) => {
-  const { t } = useTranslation('SegmentationTable.AppearanceSettings');
   const {
     renderFill,
     renderOutline,
@@ -35,12 +33,12 @@ export const SegmentationTableConfig: React.FC<{ children?: React.ReactNode }> =
     <div className="bg-muted mb-0.5 space-y-2 rounded-b px-1.5 pt-0.5 pb-3">
       <div className="my-1 flex items-center justify-between">
         <span className="text-aqua-pale text-xs">
-          {t('Show')}:{' '}
+          显示：{' '}
           {renderFill && renderOutline
-            ? t('Fill & Outline')
+            ? '填充与轮廓'
             : renderOutline
-              ? t('Outline Only')
-              : t('Fill Only')}
+              ? '仅轮廓'
+              : '仅填充'}
         </span>
         <Tabs
           value={
@@ -76,7 +74,7 @@ export const SegmentationTableConfig: React.FC<{ children?: React.ReactNode }> =
       <div className="space-y-2">
         <div className="my-2 flex items-center">
           <Label className="text-muted-foreground w-14 flex-none whitespace-nowrap text-xs">
-            Opacity
+            不透明度
           </Label>
           <Slider
             className="mx-1 flex-1"
@@ -97,7 +95,7 @@ export const SegmentationTableConfig: React.FC<{ children?: React.ReactNode }> =
 
         <div className="my-2 flex items-center">
           <Label className="text-muted-foreground w-14 flex-none whitespace-nowrap text-xs">
-            {t('Border')}
+            边框
           </Label>
           <Slider
             value={[outlineWidth]}
@@ -125,13 +123,13 @@ export const SegmentationTableConfig: React.FC<{ children?: React.ReactNode }> =
           onCheckedChange={toggleRenderInactiveSegmentations}
         />
         <Label className="text-muted-foreground mx-2 text-xs">
-          {t('Display inactive segmentations')}
+          显示非活动分割
         </Label>
       </div>
       {renderInactiveSegmentations && (
         <div className="my-2 flex items-center">
           <Label className="text-muted-foreground w-14 flex-none whitespace-nowrap text-xs">
-            Opacity
+            不透明度
           </Label>
           <Slider
             className="mx-1 flex-1"

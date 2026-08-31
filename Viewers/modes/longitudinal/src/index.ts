@@ -155,7 +155,7 @@ function modeFactory({ modeConfiguration }) {
         'PlanarFreehandROI3',
         'RectangleROI2',
         //'sam2',
-        'nninter',
+        // 'nninter' 已移除：推理按钮改为 Toolbox.tsx 中渲染的"开始推理"按钮（实时模式关闭时显示）
         'undoNninter',
         //'resetNninter',
         //'jumpToSegment',

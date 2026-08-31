@@ -68,7 +68,7 @@ export const AddSegmentRow: React.FC<{ children?: React.ReactNode }> = ({ childr
             onClick={() => onSegmentAdd(segmentationId)}
           >
             <Icons.Add />
-            Add Segment <span className="ml-1 opacity-50 text-xs">[M]</span>
+            添加分段 <span className="ml-1 opacity-50 text-xs">[M]</span>
           </Button>
         ) : null}
         {canReset ? (
@@ -79,7 +79,7 @@ export const AddSegmentRow: React.FC<{ children?: React.ReactNode }> = ({ childr
             onClick={() => onSegmentReset(segmentationId, activeSegmentIndex)}
           >
             <Icons.Refresh className="h-4 w-4" />
-            Reset Segment <span className="ml-1 opacity-50 text-xs">[R]</span>
+            重置分段 <span className="ml-1 opacity-50 text-xs">[R]</span>
           </Button>
         ) : null}
         {onTogglePromptsVisibility ? (
@@ -90,7 +90,7 @@ export const AddSegmentRow: React.FC<{ children?: React.ReactNode }> = ({ childr
             onClick={() => onTogglePromptsVisibility()}
           >
             <Icons.Pencil className="h-4 w-4" />
-            {promptsVisible ? 'Hide Prompts' : 'Show Prompts'} <span className="ml-1 opacity-50 text-xs">[O]</span>
+            {promptsVisible ? '隐藏提示' : '显示提示'} <span className="ml-1 opacity-50 text-xs">[O]</span>
           </Button>
         ) : null}
       </div>

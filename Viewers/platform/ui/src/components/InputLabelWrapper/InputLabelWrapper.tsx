@@ -3,7 +3,8 @@ import PropTypes from 'prop-types';
 import classnames from 'classnames';
 import { Icons } from '@ohif/ui-next';
 
-const baseLabelClassName = 'flex flex-col flex-1 text-white text-lg pl-1 select-none';
+const baseLabelClassName =
+  'flex flex-col flex-1 text-foreground text-sm font-medium pl-1 select-none';
 const spanClassName = 'flex flex-row items-center cursor-pointer focus:outline-none';
 
 const sortIconMap = {

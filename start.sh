@@ -16,7 +16,7 @@ mkdir -p "$HASH_DIR"
 # An already-set LOAD_<MODEL> env var is always honored and never prompted, so
 # `LOAD_SAM2=eager bash start.sh -n` still loads SAM2. Non-interactive shells
 # (no TTY, e.g. CI) default to lazy instead of hanging on a prompt.
-OPTIONAL_MODELS=(SAM2 SAM3 MEDSAM2 VOXTELL)
+OPTIONAL_MODELS=(SAM2 MEDSAM2 VOXTELL)
 ASSUME=""  # "", "yes", or "no"
 
 while [ $# -gt 0 ]; do
@@ -69,12 +69,18 @@ CHECKPOINTS_DIR="$REPO_ROOT/monai-label/checkpoints"
 SAM2_WEIGHTS="$CHECKPOINTS_DIR/sam2.1_hiera_tiny.pt"
 MEDSAM2_WEIGHTS="$CHECKPOINTS_DIR/MedSAM2_latest.pt"
 
+# Public weights are required for selectable SAM2/MedSAM2 models.
 if [ ! -f "$SAM2_WEIGHTS" ] || [ ! -f "$MEDSAM2_WEIGHTS" ]; then
-    echo "[start.sh] Model weights missing, downloading..."
+    echo "[start.sh] Preparing interactive model weights..."
     bash "$REPO_ROOT/scripts/download_weights.sh"
-else
-    echo "[start.sh] Model weights present, skipping download."
 fi
+
+if [ ! -f "$SAM2_WEIGHTS" ] || [ ! -f "$MEDSAM2_WEIGHTS" ]; then
+    echo "[start.sh] Required SAM2/MedSAM2 weights are still missing from $CHECKPOINTS_DIR." >&2
+    exit 1
+fi
+
+echo "[start.sh] Interactive model checkpoint preflight passed."
 
 # ── Per-service change detection ──────────────────────────────────────────────
 # Hash = last commit touching the service's paths + hash of any uncommitted diff.
@@ -94,7 +100,7 @@ _service_hash() {
 }
 
 OHIF_HASH=$(_service_hash Viewers/)
-MONAI_HASH=$(_service_hash monai-label/ sam2/ sam3/)
+MONAI_HASH=$(_service_hash monai-label/ sam2/)
 
 STORED_OHIF=$(cat "$HASH_DIR/ohif" 2>/dev/null || echo "")
 STORED_MONAI=$(cat "$HASH_DIR/monai" 2>/dev/null || echo "")

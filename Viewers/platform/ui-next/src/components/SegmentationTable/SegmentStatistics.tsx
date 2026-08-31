@@ -44,7 +44,7 @@ const DefaultStatsList = () => {
     <div className="space-y-1">
       {statsPending && (
         <div className="text-muted-foreground flex items-center gap-1 italic">
-          <span>Calculating…</span>
+          <span>计算中…</span>
         </div>
       )}
       {sortedStats.map(([key, stat]) => {

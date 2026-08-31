@@ -40,7 +40,7 @@ function ItemListComponent({
           placeholder={t(`Search ${itemLabel} list`)}
         ></InputFilterText>
       </div>
-      <div className="relative flex min-h-[1px] grow flex-col bg-black text-[14px]">
+      <div className="relative flex min-h-[1px] grow flex-col bg-card text-[14px]">
         {itemList == null ? (
           <LoadingIndicatorProgress className={'h-full w-full'} />
         ) : itemList.length === 0 ? (
@@ -50,7 +50,7 @@ function ItemListComponent({
           </div>
         ) : (
           <>
-            <div className="bg-secondary-dark px-3 py-1.5 text-white">{t(itemLabel)}</div>
+            <div className="bg-secondary px-3 py-1.5 text-muted-foreground">{t(itemLabel)}</div>
             <div className="ohif-scrollbar overflow-auto">
               {itemList
                 .filter(

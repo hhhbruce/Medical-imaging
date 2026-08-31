@@ -280,7 +280,13 @@ class MONAILabelApp:
         request["description"] = task.description
 
         image_id = request["image"]
-        if isinstance(image_id, str):
+        # Text-only custom/MAS VLM calls (without an image) carry no DICOM input;
+        # skip datastore resolution so plain multimodal-agent prompts can still run.
+        is_text_only_custom_vlm = (
+            str(request.get("nninter") or "") in ("custom", "mas")
+            and not request.get("image")
+        )
+        if isinstance(image_id, str) and not is_text_only_custom_vlm:
             datastore = datastore if datastore else self.datastore()
             datastore._studyInstanceUID = request["studyInstanceUID"]
             if os.path.exists(image_id):

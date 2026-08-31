@@ -9,6 +9,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import asyncio
 import copy
 import hashlib
@@ -76,6 +78,19 @@ from monailabel.utils.others.helper import (
     prepare_lasso_interaction_payload,
 )
 from monailabel.utils.others.medgemma import encode_slice_to_jpeg_bytes, window_mri, window, _encode
+
+logger = logging.getLogger(__name__)
+
+_SENSITIVE_REQUEST_FIELDS = {"custom_api_key", "api_key", "authorization"}
+
+
+def _redact_request(request):
+    """Return a shallow copy safe for logging without credentials."""
+    safe_request = dict(request)
+    for field in _SENSITIVE_REQUEST_FIELDS:
+        if field in safe_request:
+            safe_request[field] = "<redacted>"
+    return safe_request
 from sam2.build_sam import build_sam2_video_predictor, build_sam2_video_predictor_npz
 
 #from mmdet.apis import DetInferencer
@@ -108,8 +123,6 @@ sam2_checkpoint = str(CHECKPOINTS_DIR / "sam2.1_hiera_tiny.pt")
 model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
 medsam2_checkpoint = str(CHECKPOINTS_DIR / "MedSAM2_latest.pt")
 medsam2_model_cfg = "configs/sam2.1/sam2.1_hiera_t512.yaml"
-
-sam3_checkpoint = str(CHECKPOINTS_DIR / "sam3.pt")
 
 #from transformers import BertConfig, BertModel
 #from transformers import AutoTokenizer
@@ -204,11 +217,21 @@ if _nninter_checkpoint_ready:
     )
     download_path = DOWNLOAD_DIR
 else:
-    download_path = _snapshot_download_cached(
-        repo_id=REPO_ID,
-        allow_patterns=[f"{MODEL_NAME}/*"],
-        local_dir=DOWNLOAD_DIR,
-    )
+    # Keep VLM-only deployments usable when the optional nnInteractive checkpoint
+    # has not been downloaded yet. Interactive segmentation will report that the
+    # model is unavailable when selected; custom VLM requests do not need it.
+    try:
+        download_path = _snapshot_download_cached(
+            repo_id=REPO_ID,
+            allow_patterns=[f"{MODEL_NAME}/*"],
+            local_dir=DOWNLOAD_DIR,
+        )
+    except Exception as err:
+        logger.warning(
+            "nnInteractive checkpoint is unavailable; continuing for VLM-only requests: %s",
+            err,
+        )
+        download_path = DOWNLOAD_DIR
 
 VOX_MODEL_NAME = "voxtell_v1.1"  # Updated models may be available in the future
 vox_model_path = os.path.join(DOWNLOAD_DIR, VOX_MODEL_NAME)
@@ -216,11 +239,11 @@ vox_model_path = os.path.join(DOWNLOAD_DIR, VOX_MODEL_NAME)
 
 # ── Optional-model boot toggles ──────────────────────────────────────────────
 # nnInteractive is the primary model and always loads at boot. The SAM-family
-# models (SAM2, SAM3, MedSAM2) and VoxTell are optional and default to LAZY —
+# models (SAM2, MedSAM2) and VoxTell are optional and default to LAZY —
 # loaded on first use so they cost no boot time or GPU until actually requested.
 # Flip any to EAGER (load at boot, first use instant) via env in
 # docker-compose / start.sh:
-#   LOAD_SAM2 / LOAD_SAM3 / LOAD_MEDSAM2 / LOAD_VOXTELL = eager | lazy
+#   LOAD_SAM2 / LOAD_MEDSAM2 / LOAD_VOXTELL = eager | lazy
 def _model_eager(name: str) -> bool:
     return os.environ.get(f"LOAD_{name}", "lazy").strip().lower() == "eager"
 
@@ -261,7 +284,18 @@ from monailabel.tasks.infer.nninter_session_pool import (
 )
 
 # VLM ops ride the nninter param but never touch the nnInteractive session.
-_NNI_VLM_OPS = ("medGemma", "gemini", "openai", "claude", "kimi", "qwen", "gemma", "vllm")
+_NNI_VLM_OPS = (
+    "medGemma",
+    "gemini",
+    "openai",
+    "claude",
+    "kimi",
+    "qwen",
+    "gemma",
+    "vllm",
+    "custom",
+    "mas",
+)
 
 model_path = os.path.join(DOWNLOAD_DIR, MODEL_NAME)
 
@@ -281,7 +315,17 @@ _artifact_loader = nnInteractiveInferenceSession(
     torch_n_threads=8,
     do_autozoom=True,
 )
-_NNINTER_ARTIFACTS = _artifact_loader._load_model_artifacts_from_disk(model_path)
+try:
+    _NNINTER_ARTIFACTS = _artifact_loader._load_model_artifacts_from_disk(model_path)
+except FileNotFoundError as err:
+    # VLM-only requests use the same inference task but do not need the
+    # nnInteractive weights. Defer the missing-checkpoint failure until an
+    # interactive segmentation model is explicitly selected.
+    logger.warning(
+        "nnInteractive checkpoint is unavailable; interactive segmentation is disabled: %s",
+        err,
+    )
+    _NNINTER_ARTIFACTS = {}
 
 
 def _new_nninter_session() -> nnInteractiveInferenceSession:
@@ -381,6 +425,9 @@ try:
         _wlog = logging.getLogger(__name__)
         try:
             _wlog.info("nnInteractive warmup: starting...")
+            if not _NNINTER_ARTIFACTS:
+                _wlog.info("nnInteractive warmup: skipped because checkpoint is unavailable.")
+                return
             _artifact_loader.initialize_from_loaded_artifacts(_NNINTER_ARTIFACTS)
             # nnInteractive >= 2.5 warmup() returns None (it no-ops internally
             # when there is nothing to warm), so don't branch on a return value.
@@ -454,48 +501,75 @@ def _drain_nninter_preprocess(session, timeout: float = 120.0) -> None:
 # Initialize the DetInferencer
 #inferencer = DetInferencer(model=config_path, weights=checkpoint, palette='random')
 
+_interactive_model_load_lock = threading.RLock()
 _predictor_sam2 = None
 
 
+def _require_interactive_checkpoint(model: str, checkpoint: str) -> None:
+    if pathlib.Path(checkpoint).is_file():
+        return
+
+    install_hint = "Run 'bash scripts/download_weights.sh' before starting the services."
+    raise FileNotFoundError(f"{model} checkpoint not found at {checkpoint}. {install_hint}")
+
+
 def _get_predictor_sam2():
-    """Lazily build (and cache) the SAM2 predictor."""
+    """Lazily build (and cache) the SAM2 predictor exactly once."""
     global _predictor_sam2
+    _require_interactive_checkpoint("SAM2", sam2_checkpoint)
     if _predictor_sam2 is None:
-        _predictor_sam2 = build_sam2_video_predictor(model_cfg, sam2_checkpoint, vos_optimized=False)
+        with _interactive_model_load_lock:
+            if _predictor_sam2 is None:
+                _predictor_sam2 = build_sam2_video_predictor(
+                    model_cfg, sam2_checkpoint, vos_optimized=False
+                )
     return _predictor_sam2
-
-
-_predictor_sam3 = None
-_sam3_checked = False
-
-
-def _get_predictor_sam3():
-    """Lazily build (and cache) the SAM3 tracker. Returns None when the checkpoint
-    is absent (callers already handle None)."""
-    global _predictor_sam3, _sam3_checked
-    if not _sam3_checked:
-        _sam3_checked = True
-        if os.path.exists(sam3_checkpoint):
-            from sam3.model_builder import build_sam3_video_model
-
-            sam3_model = build_sam3_video_model(checkpoint_path=sam3_checkpoint)
-            _predictor_sam3 = sam3_model.tracker
-            _predictor_sam3.backbone = sam3_model.detector.backbone
-        else:
-            print(f"Warning: SAM3 checkpoint not found at {sam3_checkpoint}, skipping SAM3 model initialization")
-            _predictor_sam3 = None
-    return _predictor_sam3
 
 
 _predictor_med = None
 
 
 def _get_predictor_med():
-    """Lazily build (and cache) the MedSAM2 predictor."""
+    """Lazily build (and cache) the MedSAM2 predictor exactly once."""
     global _predictor_med
+    _require_interactive_checkpoint("MedSAM2", medsam2_checkpoint)
     if _predictor_med is None:
-        _predictor_med = build_sam2_video_predictor_npz(medsam2_model_cfg, medsam2_checkpoint, vos_optimized=False)
+        with _interactive_model_load_lock:
+            if _predictor_med is None:
+                _predictor_med = build_sam2_video_predictor_npz(
+                    medsam2_model_cfg, medsam2_checkpoint, vos_optimized=False
+                )
     return _predictor_med
+
+
+def ensure_interactive_model_ready(model: str) -> Dict[str, Any]:
+    """Load the requested interactive model and return only after it is usable.
+
+    The server does not maintain one mutable "active model". Optional models are
+    cached side by side, and each inference request names the model it needs.
+    """
+    if model == "nnInteractive":
+        if not _NNINTER_ARTIFACTS:
+            raise RuntimeError("nnInteractive model artifacts are not loaded")
+        get_pool()
+        return {
+            "model": model,
+            "status": "ready",
+            "warmup_complete": _boot_warmup_done.is_set(),
+        }
+
+    loaders = {
+        "sam2": _get_predictor_sam2,
+        "medsam2": _get_predictor_med,
+    }
+    loader = loaders.get(model)
+    if loader is None:
+        raise ValueError(f"Unsupported interactive segmentation model: {model}")
+
+    predictor = loader()
+    if predictor is None:
+        raise RuntimeError(f"{model} predictor was not initialized")
+    return {"model": model, "status": "ready"}
 
 
 # Eager-load the optional models here — AFTER the torch.compile warmup thread has
@@ -507,8 +581,6 @@ if _model_eager("SAM2"):
     _get_predictor_sam2()
 if _model_eager("VOXTELL"):
     _get_vox_predictor()
-if _model_eager("SAM3"):
-    _get_predictor_sam3()
 if _model_eager("MEDSAM2"):
     _get_predictor_med()
 
@@ -520,8 +592,6 @@ _MEDGEMMA_HF_27B_IT = "google/medgemma-27b-it"
 _medgemma_loaded_id: Optional[str] = None
 _medgemma_processor: Any = None
 _medgemma_model: Any = None
-
-logger = logging.getLogger(__name__)
 
 
 def _medgemma_resolve_hf_model_id(data: Dict[str, Any]) -> str:
@@ -807,7 +877,7 @@ def _qwen_hf_router_extra_body(req: Dict[str, Any]) -> Dict[str, Any]:
     en = _infer_request_bool(req.get("qwen_enable_thinking"), default=False)
     dis = _infer_request_bool(req.get("qwen_disable_thinking"), default=False)
     if en and dis:
-        raise MONAILabelError(
+        raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
             "Use only one of qwen_enable_thinking or qwen_disable_thinking"
         )
     if en:
@@ -947,11 +1017,11 @@ def _vllm_resolve_family(default_model_id: str, override: str) -> str:
     valid = ("internvl", "qwen", "kimi", "gemma")
     if o:
         if o not in valid:
-            raise MONAILabelError(
+            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                 f"vllm_family must be one of {', '.join(valid)}; got {override!r}"
             )
         if not _vllm_id_matches_family(default_model_id, o):
-            raise MONAILabelError(
+            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                 f"vLLM default model id {default_model_id!r} does not match requested "
                 f"vllm_family={o!r}; use a server whose first listed model id contains that family."
             )
@@ -965,7 +1035,7 @@ def _vllm_resolve_family(default_model_id: str, override: str) -> str:
         return "kimi"
     if "gemma" in mid:
         return "gemma"
-    raise MONAILabelError(
+    raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
         f"vLLM default model id {default_model_id!r} does not match InternVL, Qwen, Kimi, or Gemma; "
         "set vllm_family in the infer request if the id is non-standard."
     )
@@ -1124,13 +1194,252 @@ def _claude_messages_create_extra_kwargs(req: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     valid = ("low", "medium", "high", "max")
     if effort not in valid:
-        raise MONAILabelError(
+        raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
             f"Invalid claude_thinking_effort {effort!r}; use one of: {', '.join(valid)}"
         )
     return {
         "thinking": {"type": "adaptive"},
         "output_config": {"effort": effort},
     }
+
+
+# --- Custom VLM endpoint (user-provided base_url + api_key; no self-hosting needed) ---
+
+_CUSTOM_ENDPOINT_TYPES = ("openai-responses", "openai-chat", "anthropic")
+_CUSTOM_ENV_BASE_URL = "CUSTOM_VLM_BASE_URL"
+_CUSTOM_ENV_API_KEY = "CUSTOM_VLM_API_KEY"
+
+
+def _custom_endpoint_type(data: Dict[str, Any]) -> str:
+    """Normalise ``custom_endpoint_type``: openai-responses | openai-chat | anthropic."""
+    raw = (str(data.get("custom_endpoint_type") or "openai-chat")).strip().lower()
+    if raw not in _CUSTOM_ENDPOINT_TYPES:
+        raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
+            f"Invalid custom_endpoint_type {raw!r}; use one of: {', '.join(_CUSTOM_ENDPOINT_TYPES)}"
+        )
+    return raw
+
+
+def _custom_base_url(data: Dict[str, Any]) -> str:
+    """Custom endpoint base URL from request or env; raises when missing."""
+    url = str(
+        data.get("custom_base_url") or os.environ.get(_CUSTOM_ENV_BASE_URL) or ""
+    ).strip()
+    if not url:
+        raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
+            "custom_base_url missing: pass custom_base_url in the infer request "
+            f"or set {_CUSTOM_ENV_BASE_URL} in the environment."
+        )
+    return url.rstrip("/")
+
+
+def _custom_api_key(data: Dict[str, Any]) -> str:
+    """Custom endpoint API key from request or env (may be empty for local servers)."""
+    return str(
+        data.get("custom_api_key") or os.environ.get(_CUSTOM_ENV_API_KEY) or ""
+    ).strip()
+
+
+def _custom_model(data: Dict[str, Any]) -> str:
+    """Explicit model id for the custom endpoint (selected from the fetched list)."""
+    return str(data.get("custom_model") or "").strip()
+
+
+def _custom_text_content(instruction: str, query: str) -> str:
+    """Plain-text prompt (instruction first, then query) for text-only custom calls."""
+    return f"{instruction}\n\n{query}" if instruction else query
+
+
+def _custom_build_user_content(
+    endpoint_type: str,
+    instruction: str,
+    query: str,
+    slice_indices: List[int],
+    normalized_img_list: List[np.ndarray],
+):
+    """Per-endpoint user content for a custom VLM call.
+
+    Reuses the multimodal content builders shared with the other VLM providers when
+    medical slices are available; otherwise sends a plain-text prompt.
+    """
+    if endpoint_type == "openai-responses":
+        if not slice_indices:
+            return [{"type": "input_text", "text": _custom_text_content(instruction, query)}]
+        return _vlm_openai_responses_content(
+            instruction, slice_indices, normalized_img_list, query
+        )
+    if endpoint_type == "openai-chat":
+        if not slice_indices:
+            return _custom_text_content(instruction, query)
+        return _vlm_kimi_hf_chat_content(
+            instruction, slice_indices, normalized_img_list, query
+        )
+    # anthropic
+    if not slice_indices:
+        return _custom_text_content(instruction, query)
+    return _vlm_anthropic_messages_content(
+        instruction, slice_indices, normalized_img_list, query
+    )
+
+
+def _custom_run(
+    data: Dict[str, Any],
+    instruction: str,
+    query: str,
+    slice_indices: List[int],
+    normalized_img_list: List[np.ndarray],
+) -> str:
+    """Send a request to a user-configured VLM endpoint and return the assistant text.
+
+    ``custom_endpoint_type`` selects the wire protocol:
+      - ``openai-responses``  → OpenAI Responses API (``responses.create``)
+      - ``openai-chat``       → OpenAI-compatible Chat Completions (``chat.completions.create``)
+      - ``anthropic``         → Anthropic Messages API (``messages.create``)
+    """
+    endpoint_type = _custom_endpoint_type(data)
+    base_url = _custom_base_url(data)
+    api_key = _custom_api_key(data)
+    model = _custom_model(data)
+    if not model:
+        raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
+            "custom_model missing: select a model from the fetched model list first."
+        )
+
+    if endpoint_type == "anthropic":
+        try:
+            from anthropic import Anthropic
+        except ImportError as err:
+            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
+                "Custom Anthropic endpoint requires the anthropic package: "
+                "pip install anthropic"
+            ) from err
+        if not api_key:
+            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
+                "custom_api_key missing for anthropic endpoint: pass custom_api_key "
+                f"in the infer request or set {_CUSTOM_ENV_API_KEY} in the environment."
+            )
+        client = Anthropic(
+            api_key=api_key,
+            base_url=base_url or "https://api.anthropic.com",
+            timeout=1200.0,
+        )
+        user_content = _custom_build_user_content(
+            endpoint_type, instruction, query, slice_indices, normalized_img_list
+        )
+        logger.info(f"Custom Anthropic endpoint base_url={base_url} model={model}")
+        message = client.messages.create(
+            model=model,
+            max_tokens=8192,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        return _anthropic_assistant_text(message)
+
+    try:
+        from openai import OpenAI
+    except ImportError as err:
+        raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
+            "Custom OpenAI endpoint requires the openai package: pip install openai"
+        ) from err
+
+    client = OpenAI(api_key=api_key or "missing", base_url=base_url, timeout=None)
+    user_content = _custom_build_user_content(
+        endpoint_type, instruction, query, slice_indices, normalized_img_list
+    )
+
+    if endpoint_type == "openai-responses":
+        logger.info(f"Custom OpenAI Responses endpoint base_url={base_url} model={model}")
+        response = client.responses.create(
+            model=model,
+            input=[{"role": "user", "content": user_content}],
+        )
+        return getattr(response, "output_text", "") or ""
+
+    logger.info(f"Custom OpenAI Chat endpoint base_url={base_url} model={model}")
+    completion = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": user_content}],
+    )
+    return completion.choices[0].message.content or ""
+
+
+def _mas_run(
+    data: Dict[str, Any],
+    instruction: str,
+    query: str,
+    slice_indices: List[int],
+    normalized_img_list: List[np.ndarray],
+):
+    """Run a selected medical multi-agent workflow on the custom Chat endpoint.
+
+    The DICOM-to-slice preparation is shared with ``custom``.  The MAS layer then
+    sends the resulting in-memory JPEG data URLs to several role prompts and
+    returns one synthesized clinical-support answer.
+    """
+    endpoint_type = _custom_endpoint_type(data)
+    if endpoint_type != "openai-chat":
+        raise MONAILabelException(
+            MONAILabelError.INVALID_INPUT,
+            "mas_strategy currently requires custom_endpoint_type=openai-chat.",
+        )
+
+    base_url = _custom_base_url(data)
+    api_key = _custom_api_key(data)
+    model = _custom_model(data)
+    if not model:
+        raise MONAILabelException(
+            MONAILabelError.INVALID_INPUT,
+            "custom_model missing: select a model from the fetched model list first.",
+        )
+    if not api_key:
+        raise MONAILabelException(
+            MONAILabelError.INVALID_INPUT,
+            "custom_api_key missing for MAS requests.",
+        )
+
+    try:
+        from openai import OpenAI
+    except ImportError as err:
+        raise MONAILabelException(
+            MONAILabelError.INVALID_INPUT,
+            "MAS requires the openai package: pip install openai",
+        ) from err
+
+    from monailabel.tasks.infer.mas_inference import MASWorkflowError, run_workflow
+
+    strategy = str(data.get("mas_strategy") or "single").strip().lower()
+    try:
+        rounds = max(1, min(int(data.get("mas_rounds") or 2), 5))
+    except (TypeError, ValueError):
+        rounds = 2
+
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=1200.0)
+    user_content = _custom_build_user_content(
+        "openai-chat", instruction, query, slice_indices, normalized_img_list
+    )
+    logger.info(
+        "MAS workflow strategy=%s model=%s base_url=%s rounds=%s",
+        strategy,
+        model,
+        base_url,
+        rounds,
+    )
+    try:
+        return run_workflow(
+            client=client,
+            model=model,
+            strategy=strategy,
+            question=query,
+            initial_content=user_content,
+            rounds=rounds,
+        )
+    except MASWorkflowError as err:
+        raise MONAILabelException(MONAILabelError.INVALID_INPUT, str(err)) from err
+
+    PRE_TRANSFORMS = "PRE_TRANSFORMS"
+    INFERER = "INFERER"
+    INVERT_TRANSFORMS = "INVERT_TRANSFORMS"
+    POST_TRANSFORMS = "POST_TRANSFORMS"
+    WRITER = "WRITER"
 
 
 class CallBackTypes(str, Enum):
@@ -1518,11 +1827,11 @@ class BasicInferTask(InferTask):
 
         logger.setLevel(req.get("logging", "INFO").upper())
         if req.get("image") is not None and isinstance(req.get("image"), str):
-            logger.info(f"Infer Request (final): {req}")
+            logger.info(f"Infer Request (final): {_redact_request(req)}")
             data = copy.deepcopy(req)
             data.update({"image_path": req.get("image")})
         else:
-            dump_data(req, logger.level)
+            dump_data(_redact_request(req), logger.level)
             data = req
 
         # callbacks useful in case of pipeliens to consume intermediate output from each of the following stages
@@ -1537,6 +1846,44 @@ class BasicInferTask(InferTask):
         final_result_json = {}
         result_json = {}
         nnInter = data['nninter']
+
+        # Custom VLM endpoint, text-only (no DICOM series in the request). Runs before
+        # any image loading so a plain instruction/query can be answered without a
+        # series being open in the viewer.
+        if nnInter in ("custom", "mas") and not data.get("image"):
+            _custom_texts = data.get("texts") or []
+            _custom_query = ""
+            if _custom_texts and _custom_texts[0] not in (None, "", {}):
+                _custom_query = str(_custom_texts[0])
+            if not _custom_query.strip():
+                raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
+                    "Custom VLM request requires a non-empty 'texts' query."
+                )
+            _custom_instruction = str(data.get("instruction") or "").strip() or (
+                "You are an instructor teaching medical students. You are analyzing "
+                "the following CT slices. Please review the slices provided below "
+                "carefully."
+            )
+            final_result_json["server_begin_ts"] = server_begin_ts
+            final_result_json["vlm_result"] = True
+            if nnInter == "mas":
+                response_text, token_stats, mas_metadata = _mas_run(
+                    data, _custom_instruction, _custom_query, [], []
+                )
+                final_result_json["mas_result"] = True
+                final_result_json["mas_strategy"] = mas_metadata["strategy"]
+                final_result_json["mas_agent_count"] = mas_metadata["agent_count"]
+                final_result_json["mas_rounds"] = mas_metadata["rounds"]
+                final_result_json["mas_token_stats"] = token_stats
+            else:
+                response_text = _custom_run(
+                    data, _custom_instruction, _custom_query, [], []
+                )
+            final_result_json["server_end_ts"] = time.time()
+            logger.info(
+                f"Custom VLM (text-only) generated text length={len(response_text)} chars"
+            )
+            return response_text, final_result_json
 
         img = None
 
@@ -1803,6 +2150,9 @@ class BasicInferTask(InferTask):
 
             if nnInter in _NNI_VLM_OPS:
                 if len(data['texts'])==1 and data['texts'][0]!='' and data['texts'][0]!={}:
+                    # VLM branches return the assistant's text as the result; mark it so the
+                    # HTTP layer (send_response) returns it as a plain body instead of a file.
+                    final_result_json["vlm_result"] = True
                     hf_token = (
                         _resolve_hf_token(data)
                         if nnInter in ("kimi", "qwen", "gemma")
@@ -1821,6 +2171,31 @@ class BasicInferTask(InferTask):
                         )
                     )
                     logger.info(f"normalized_img_list count: {len(normalized_img_list)}")
+
+                    if nnInter == "custom":
+                        response_text = _custom_run(
+                            data, instruction, query, slice_indices, normalized_img_list
+                        )
+                        logger.info(
+                            f"Custom VLM generated text length={len(response_text)} chars"
+                        )
+                        return response_text, final_result_json
+
+                    if nnInter == "mas":
+                        response_text, token_stats, mas_metadata = _mas_run(
+                            data, instruction, query, slice_indices, normalized_img_list
+                        )
+                        final_result_json["mas_result"] = True
+                        final_result_json["mas_strategy"] = mas_metadata["strategy"]
+                        final_result_json["mas_agent_count"] = mas_metadata["agent_count"]
+                        final_result_json["mas_rounds"] = mas_metadata["rounds"]
+                        final_result_json["mas_token_stats"] = token_stats
+                        logger.info(
+                            "MAS generated text length=%s chars, calls=%s",
+                            len(response_text),
+                            token_stats["num_llm_calls"],
+                        )
+                        return response_text, final_result_json
 
                     if nnInter == "medGemma":
                         model_id = _medgemma_resolve_hf_model_id(data)
@@ -1887,7 +2262,7 @@ class BasicInferTask(InferTask):
                         try:
                             from google import genai
                         except ImportError as err:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Gemini VLM requires the google-genai package: pip install google-genai"
                             ) from err
                         api_key = (
@@ -1896,7 +2271,7 @@ class BasicInferTask(InferTask):
                             or ""
                         ).strip()
                         if not api_key:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Gemini API key missing: pass gemini_api_key in the infer request "
                                 "or set GEMINI_API_KEY in the environment."
                             )
@@ -1923,7 +2298,7 @@ class BasicInferTask(InferTask):
                         try:
                             from openai import OpenAI
                         except ImportError as err:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "OpenAI VLM requires the openai package: pip install openai"
                             ) from err
                         api_key = (
@@ -1932,7 +2307,7 @@ class BasicInferTask(InferTask):
                             or ""
                         ).strip()
                         if not api_key:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "OpenAI API key missing: pass openai_api_key in the infer request "
                                 "or set OPENAI_API_KEY in the environment."
                             )
@@ -1964,7 +2339,7 @@ class BasicInferTask(InferTask):
                         try:
                             from anthropic import Anthropic
                         except ImportError as err:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Claude VLM requires the anthropic package: pip install anthropic"
                             ) from err
                         api_key = (
@@ -1973,7 +2348,7 @@ class BasicInferTask(InferTask):
                             or ""
                         ).strip()
                         if not api_key:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Anthropic API key missing: pass anthropic_api_key in the infer "
                                 "request or set ANTHROPIC_API_KEY in the environment."
                             )
@@ -1999,11 +2374,11 @@ class BasicInferTask(InferTask):
                         try:
                             from openai import OpenAI
                         except ImportError as err:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Kimi (HF router) requires the openai package: pip install openai"
                             ) from err
                         if not hf_token:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Hugging Face token missing: pass huggingface_token in the infer "
                                 "request or set HF_TOKEN / HUGGINGFACE_HUB_TOKEN."
                             )
@@ -2041,11 +2416,11 @@ class BasicInferTask(InferTask):
                         try:
                             from openai import OpenAI
                         except ImportError as err:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Qwen (HF router) requires the openai package: pip install openai"
                             ) from err
                         if not hf_token:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Hugging Face token missing: pass huggingface_token or set "
                                 "HF_TOKEN / HUGGINGFACE_HUB_TOKEN."
                             )
@@ -2085,11 +2460,11 @@ class BasicInferTask(InferTask):
                         try:
                             from openai import OpenAI
                         except ImportError as err:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Gemma (HF router) requires the openai package: pip install openai"
                             ) from err
                         if not hf_token:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "Hugging Face token missing: pass huggingface_token or set "
                                 "HF_TOKEN / HUGGINGFACE_HUB_TOKEN."
                             )
@@ -2131,7 +2506,7 @@ class BasicInferTask(InferTask):
                         try:
                             from openai import APIConnectionError, OpenAI
                         except ImportError as err:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 "vLLM requires the openai package: pip install openai"
                             ) from err
                         # Default reaches the Docker *host* from inside a container (see docker-compose
@@ -2150,7 +2525,7 @@ class BasicInferTask(InferTask):
                         try:
                             listed = getattr(client.models.list(), "data", None) or []
                             if not listed:
-                                raise MONAILabelError(
+                                raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                     "vLLM: no models returned from the server; check vllm_base_url "
                                     "and that the OpenAI-compatible API is running."
                                 )
@@ -2192,7 +2567,7 @@ class BasicInferTask(InferTask):
                             )
                             return medgemma_response, final_result_json
                         except APIConnectionError as conn_err:
-                            raise MONAILabelError(
+                            raise MONAILabelException(MONAILabelError.INVALID_INPUT, 
                                 f"vLLM: cannot connect to OpenAI-compatible API at {base_url!r} "
                                 f"({conn_err}). If MONAI runs in Docker and vLLM on the host, use the host "
                                 "from inside the container (e.g. http://host.docker.internal:8000/v1 with "
@@ -2617,13 +2992,6 @@ class BasicInferTask(InferTask):
             medsam2 = data['medsam2']
             if medsam2 == 'medsam2':
                 predictor = _get_predictor_med()
-            elif medsam2 == 'sam3':
-                predictor_sam3 = _get_predictor_sam3()
-                if predictor_sam3 is None:
-                    logger.error(f"SAM3 model not available. Checkpoint not found at {sam3_checkpoint}.")
-                    return _prediction_path("sam3_not_found.nii.gz"), final_result_json
-                else:
-                    predictor = predictor_sam3
             else:
                 predictor = _get_predictor_sam2()
             start = time.time()
@@ -2763,42 +3131,23 @@ class BasicInferTask(InferTask):
                     logger.info(f"ann_frame_list: {ann_frame_list}")
                     logger.info(f"ann_frame_idx: {ann_frame_idx}")
                     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                        if medsam2 == 'sam3':
-                            _, out_obj_ids, _, out_mask_logits = predictor.add_new_points_or_box(
-                            inference_state=inference_state,
-                            frame_idx=ann_frame_idx,
-                            obj_id=ann_obj_id,
-                            points=points,
-                            labels=labels,
-                            box=boxes
-                            )
-                        else:    
-                            _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-                            inference_state=inference_state,
-                            frame_idx=ann_frame_idx,
-                            obj_id=ann_obj_id,
-                            points=points,
-                            labels=labels,
-                            box=boxes
-                            )
+                        _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
+                        inference_state=inference_state,
+                        frame_idx=ann_frame_idx,
+                        obj_id=ann_obj_id,
+                        points=points,
+                        labels=labels,
+                        box=boxes
+                        )
                 else:
                     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                        if medsam2 == 'sam3':
-                            _, out_obj_ids, _, out_mask_logits = predictor.add_new_points_or_box(
-                            inference_state=inference_state,
-                            frame_idx=ann_frame_idx,
-                            obj_id=ann_obj_id,
-                            points=points,
-                            labels=labels,
-                            )
-                        else:    
-                            _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-                            inference_state=inference_state,
-                            frame_idx=ann_frame_idx,
-                            obj_id=ann_obj_id,
-                            points=points,
-                            labels=labels,
-                            )
+                        _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
+                        inference_state=inference_state,
+                        frame_idx=ann_frame_idx,
+                        obj_id=ann_obj_id,
+                        points=points,
+                        labels=labels,
+                        )
 
                 if "one" in data:
                     video_segments[ann_frame_idx] = {
@@ -2806,20 +3155,12 @@ class BasicInferTask(InferTask):
                         for i, out_obj_id in enumerate(out_obj_ids)
                     }
             if "one" not in data:
-                if medsam2 == 'sam3':
-                    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                        for out_frame_idx, out_obj_ids, _, out_mask_logits,_ in predictor.propagate_in_video(inference_state, start_frame_idx=0, max_frame_num_to_track=None, reverse=False, propagate_preflight=True):
-                            video_segments[out_frame_idx] = {
-                                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                                for i, out_obj_id in enumerate(out_obj_ids)
-                            }
-                else:
-                    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                        for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=0, reverse=False):
-                            video_segments[out_frame_idx] = {
-                                out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                                for i, out_obj_id in enumerate(out_obj_ids)
-                            }
+                with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=0, reverse=False):
+                        video_segments[out_frame_idx] = {
+                            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
+                            for i, out_obj_id in enumerate(out_obj_ids)
+                        }
 
             # Free SAM2 inference state buffers before building the output array
             predictor.reset_state(inference_state)
@@ -2850,8 +3191,6 @@ class BasicInferTask(InferTask):
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             if medsam2 == 'medsam2':
                 final_result_json["label_name"] = f"medsam2_pred_{timestamp}"
-            elif medsam2 == 'sam3':
-                final_result_json["label_name"] = f"sam3_pred_{timestamp}"
             else:
                 final_result_json["label_name"] = f"sam2_pred_{timestamp}"
             

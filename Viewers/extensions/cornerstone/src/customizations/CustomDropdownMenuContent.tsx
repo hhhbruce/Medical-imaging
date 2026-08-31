@@ -12,7 +12,6 @@ import {
   useSegmentationTableContext,
   useSegmentationExpanded,
 } from '@ohif/ui-next';
-import { useTranslation } from 'react-i18next';
 import { useSystem } from '@ohif/core/src';
 
 /**
@@ -20,7 +19,6 @@ import { useSystem } from '@ohif/core/src';
  */
 export const CustomDropdownMenuContent = () => {
   const { commandsManager } = useSystem();
-  const { t } = useTranslation('SegmentationTable');
   const {
     onSegmentationAdd,
     onSegmentationRemoveFromViewport,
@@ -80,28 +78,28 @@ export const CustomDropdownMenuContent = () => {
     <DropdownMenuContent align="start">
       <DropdownMenuItem onClick={() => onSegmentationAdd(segmentationId)}>
         <Icons.Add className="text-foreground" />
-        <span className="pl-2">{t('Create New Segmentation')}</span>
+        <span className="pl-2">新建分割</span>
       </DropdownMenuItem>
       <DropdownMenuSeparator />
-      <DropdownMenuLabel>{t('Manage Current Segmentation')}</DropdownMenuLabel>
+      <DropdownMenuLabel>管理当前分割</DropdownMenuLabel>
       <DropdownMenuItem onClick={() => onSegmentationRemoveFromViewport(segmentationId)}>
         <Icons.Series className="text-foreground" />
-        <span className="pl-2">{t('Remove from Viewport')}</span>
+        <span className="pl-2">从视口移除</span>
       </DropdownMenuItem>
       <DropdownMenuItem onClick={() => onSegmentationEdit(segmentationId)}>
         <Icons.Rename className="text-foreground" />
-        <span className="pl-2">{t('Rename')}</span>
+        <span className="pl-2">重命名</span>
       </DropdownMenuItem>
       <DropdownMenuSub>
         <DropdownMenuSubTrigger className="pl-1">
           <Icons.Export className="text-foreground" />
-          <span className="pl-2">{t('Download & Export')}</span>
+          <span className="pl-2">下载与导出</span>
         </DropdownMenuSubTrigger>
         <DropdownMenuPortal>
           <DropdownMenuSubContent>
             <DropdownMenuLabel className="flex items-center pl-0">
               <Icons.Download className="h-5 w-5" />
-              <span className="pl-1">{t('Download')}</span>
+              <span className="pl-1">下载</span>
             </DropdownMenuLabel>
             <DropdownMenuItem
               onClick={e => {
@@ -109,7 +107,7 @@ export const CustomDropdownMenuContent = () => {
                 actions.downloadCSVSegmentationReport(segmentationId);
               }}
             >
-              {t('CSV Report')}
+              CSV 报告
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={e => {
@@ -118,7 +116,7 @@ export const CustomDropdownMenuContent = () => {
               }}
               disabled={!allowExport}
             >
-              {t('DICOM SEG')}
+              DICOM SEG
             </DropdownMenuItem>
             <DropdownMenuItem
               onClick={e => {
@@ -127,12 +125,12 @@ export const CustomDropdownMenuContent = () => {
               }}
               disabled={!allowExport}
             >
-              {t('DICOM RTSS')}
+              DICOM RTSS
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuLabel className="flex items-center pl-0">
               <Icons.Export className="h-5 w-5" />
-              <span className="pl-1 pt-1">{t('Export')}</span>
+              <span className="pl-1 pt-1">导出</span>
             </DropdownMenuLabel>
             <DropdownMenuItem
               onClick={e => {
@@ -141,7 +139,7 @@ export const CustomDropdownMenuContent = () => {
               }}
               disabled={!allowExport}
             >
-              {t('DICOM SEG')}
+              DICOM SEG
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuPortal>
@@ -149,7 +147,7 @@ export const CustomDropdownMenuContent = () => {
       <DropdownMenuSeparator />
       <DropdownMenuItem onClick={() => onSegmentationDelete(segmentationId)}>
         <Icons.Delete className="text-red-600" />
-        <span className="pl-2 text-red-600">{t('Delete')}</span>
+        <span className="pl-2 text-red-600">删除</span>
       </DropdownMenuItem>
     </DropdownMenuContent>
   );

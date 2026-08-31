@@ -237,8 +237,8 @@ export const DataRow: React.FC<DataRowProps> = ({
 
         {/* Number Box */}
         <div
-          className={`flex h-7 max-h-7 w-7 flex-shrink-0 items-center justify-center rounded-l border-r border-black text-base ${
-            isSelected ? 'bg-highlight text-black' : 'bg-muted text-muted-foreground'
+          className={`flex h-7 max-h-7 w-7 flex-shrink-0 items-center justify-center rounded-l border-r border-border text-base ${
+            isSelected ? 'bg-highlight text-background' : 'bg-muted text-muted-foreground'
           } overflow-hidden`}
         >
           {number}
@@ -294,7 +294,7 @@ export const DataRow: React.FC<DataRowProps> = ({
             className={`h-6 w-6 transition-opacity ${
               isSelected || !isVisible ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
             }`}
-            aria-label={isVisible ? 'Hide' : 'Show'}
+            aria-label={isVisible ? '隐藏' : '显示'}
             onClick={e => {
               e.stopPropagation();
               onToggleVisibility(e);
@@ -310,7 +310,7 @@ export const DataRow: React.FC<DataRowProps> = ({
             className={`h-6 w-6 transition-opacity ${
               isSelected || !localMeasurementVisible ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
             }`}
-            aria-label={localMeasurementVisible ? 'Hide' : 'Show'}
+            aria-label={localMeasurementVisible ? '隐藏' : '显示'}
             onClick={e => {
               e.stopPropagation();
               setLocalMeasurementVisible(!localMeasurementVisible);
@@ -336,7 +336,7 @@ export const DataRow: React.FC<DataRowProps> = ({
                       ? 'opacity-100'
                       : 'opacity-0 group-hover:opacity-100'
                   }`}
-                  aria-label="Actions"
+                  aria-label="操作"
                   onClick={e => e.stopPropagation()} // Prevent row selection on button click
                 >
                   <Icons.More className="h-6 w-6" />
@@ -350,21 +350,21 @@ export const DataRow: React.FC<DataRowProps> = ({
                 <>
                   <DropdownMenuItem onClick={e => handleAction('Rename', e)}>
                     <Icons.Rename className="text-foreground" />
-                    <span className="pl-2">Rename</span>
+                    <span className="pl-2">重命名</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={e => handleAction('Delete', e)}>
                     <Icons.Delete className="text-foreground" />
-                    <span className="pl-2">Delete</span>
+                    <span className="pl-2">删除</span>
                   </DropdownMenuItem>
                   {onColor && (
                     <DropdownMenuItem onClick={e => handleAction('Color', e)}>
                       <Icons.ColorChange className="text-foreground" />
-                      <span className="pl-2">Change Color</span>
+                      <span className="pl-2">更改颜色</span>
                     </DropdownMenuItem>
                   )}
                   <DropdownMenuItem onClick={e => handleAction('Lock', e)}>
                     <Icons.Lock className="text-foreground" />
-                    <span className="pl-2">{isLocked ? 'Unlock' : 'Lock'}</span>
+                    <span className="pl-2">{isLocked ? '解锁' : '锁定'}</span>
                   </DropdownMenuItem>
                 </>
               </DropdownMenuContent>

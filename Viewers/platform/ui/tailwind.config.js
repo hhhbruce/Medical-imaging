@@ -25,53 +25,53 @@ module.exports = {
       inherit: 'inherit',
 
       aqua: {
-        pale: '#7bb2ce',
+        pale: '#2563eb',
       },
 
       primary: {
-        light: '#5acce6',
-        main: '#0944b3',
-        dark: '#090c29',
-        active: '#348cfd',
+        light: '#1D5EBF',
+        main: '#1D5EBF',
+        dark: '#E8F1FF',
+        active: '#164A99',
       },
       inputfield: {
-        main: '#3a3f99',
-        disabled: '#2b166b',
-        focus: '#5acce6',
-        placeholder: '#39383f',
+        main: '#C5D4E8',
+        disabled: '#EEF2F7',
+        focus: '#1D5EBF',
+        placeholder: '#7A8FA8',
       },
 
       secondary: {
-        light: '#3a3f99',
-        main: '#2b166b',
-        dark: '#041c4a',
-        active: '#1f1f27',
+        light: '#C5D4E8',
+        main: '#EEF2F7',
+        dark: '#FFFFFF',
+        active: '#E8F1FF',
       },
 
       indigo: {
-        dark: '#0b1a42',
+        dark: '#0F2744',
       },
 
       common: {
-        bright: '#e1e1e1',
-        light: '#a19fad',
-        main: '#fff',
-        dark: '#726f7e',
-        active: '#2c3074',
+        bright: '#0F2744',
+        light: '#5A6F8C',
+        main: '#0F2744',
+        dark: '#7A8FA8',
+        active: '#E8F1FF',
       },
       bkg: {
-        low: '#050615',
-        med: '#090C29',
-        full: '#041C4A',
+        low: '#F4F7FB',
+        med: '#EEF2F7',
+        full: '#FFFFFF',
       },
       info: {
-        primary: '#FFFFFF',
-        secondary: '#7BB2CE',
+        primary: '#0F2744',
+        secondary: '#1D5EBF',
       },
       actions: {
-        primary: '#348CFD',
-        highlight: '#5ACCE6',
-        hover: 'rgba(52, 140, 253, 0.2)',
+        primary: '#1D5EBF',
+        highlight: '#4A8AE8',
+        hover: 'rgba(29, 94, 191, 0.08)',
       },
       customgreen: {
         100: '#05D97C',
@@ -79,20 +79,20 @@ module.exports = {
       },
 
       customblue: {
-        10: '#0A163F',
-        20: '#0B1F54',
-        30: '#09286e',
-        40: '#0E307F',
-        50: '#0F3A94',
-        80: '#1454D4',
-        100: '#c4fdff',
-        200: '#38daff',
-        300: '#1D204D',
-        400: '#90A0C1',
+        10: '#eff6ff',
+        20: '#dbeafe',
+        30: '#bfdbfe',
+        40: '#dbeafe',
+        50: '#93c5fd',
+        80: '#2563eb',
+        100: '#eff6ff',
+        200: '#60a5fa',
+        300: '#dbeafe',
+        400: '#64748b',
       },
 
       customgray: {
-        100: '#262943',
+        100: '#f1f5f9',
       },
 
       gray: {

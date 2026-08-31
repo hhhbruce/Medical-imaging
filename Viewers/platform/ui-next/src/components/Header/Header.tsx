@@ -154,13 +154,13 @@ function Header({
           {UndoRedo}
 
           {/* 撤销/重做与患者信息之间的分隔线。 */}
-          <div className="border-primary-dark mx-1.5 h-[25px] border-r"></div>
+          <div className="mx-1.5 h-[25px] border-r border-border"></div>
 
           {/* 患者信息由 HeaderPatientInfo 组件传入。 */}
           {PatientInfo}
 
           {/* 患者信息与设置菜单之间的分隔线。 */}
-          <div className="border-primary-dark mx-1.5 h-[25px] border-r"></div>
+          <div className="mx-1.5 h-[25px] border-r border-border"></div>
 
           {/* 设置菜单容器，防止按钮在弹性布局中被压缩。 */}
           <div className="flex-shrink-0">
@@ -170,7 +170,7 @@ function Header({
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="text-primary hover:bg-primary-dark mt-2 h-full w-full"
+                  className="h-full w-full text-foreground/70 hover:bg-accent hover:text-primary"
                 >
                   <Icons.GearSettings />
                 </Button>

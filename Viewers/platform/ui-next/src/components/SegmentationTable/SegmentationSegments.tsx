@@ -201,7 +201,7 @@ export const SegmentationSegments = ({ children = null }: { children?: React.Rea
     </ScrollArea>
     {selectedIndices.size > 0 && (
       <div className="flex items-center justify-between px-1 py-0.5">
-        <span className="text-muted-foreground text-xs">{selectedIndices.size} selected</span>
+        <span className="text-muted-foreground text-xs">{selectedIndices.size} 已选</span>
         <div className="flex gap-1">
           <Button
             size="sm"
@@ -209,7 +209,7 @@ export const SegmentationSegments = ({ children = null }: { children?: React.Rea
             className="h-6 px-1.5 text-xs"
             onClick={() => setSelectedIndices(new Set())}
           >
-            Clear
+            清除
           </Button>
           <Button
             size="sm"
@@ -218,7 +218,7 @@ export const SegmentationSegments = ({ children = null }: { children?: React.Rea
             onClick={handleDeleteSelected}
           >
             <Icons.Delete className="mr-1 h-3 w-3" />
-            Delete
+            删除
           </Button>
         </div>
       </div>

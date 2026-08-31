@@ -161,6 +161,9 @@ module.exports = (env, argv) => {
           context: '/monai',
           target: MONAI_PROXY_DOMAIN,
           changeOrigin: true,
+          pathRewrite: {
+            '^/monai': '',
+          },
         },
         {
           context: '/dicomweb',

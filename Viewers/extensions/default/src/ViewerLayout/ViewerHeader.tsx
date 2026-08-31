@@ -1,6 +1,5 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { useTranslation } from 'react-i18next';
 
 // 顶部 Header、按钮、图标和弹窗管理 Hook。
 import { Button, Header, Icons, useModal } from '@ohif/ui-next';
@@ -86,9 +85,6 @@ function ViewerHeader({ appConfig }: withAppTypes<{ appConfig: AppTypes.Config }
     });
   };
 
-  // 国际化翻译函数，用于生成菜单标题和弹窗标题。
-  const { t } = useTranslation();
-
   // 弹窗控制 Hook，用于显示关于和用户偏好弹窗。
   const { show } = useModal();
 
@@ -115,12 +111,12 @@ function ViewerHeader({ appConfig }: withAppTypes<{ appConfig: AppTypes.Config }
     // },
     {
       // 用户偏好菜单：打开用户设置弹窗。
-      title: t('Header:Preferences'),
+      title: '偏好设置',
       icon: 'settings',
       onClick: () =>
         show({
           content: UserPreferencesModal,
-          title: t('UserPreferencesModal:User preferences'),
+          title: '用户偏好',
           containerClassName: 'flex max-w-4xl p-6 flex-col',
         }),
     },
@@ -132,7 +128,7 @@ function ViewerHeader({ appConfig }: withAppTypes<{ appConfig: AppTypes.Config }
    */
   if (appConfig.oidc) {
     menuOptions.push({
-      title: t('Header:Logout'),
+      title: '退出登录',
       icon: 'power-off',
       onClick: async () => {
         // 退出后将当前页面地址作为重定向地址传给认证系统。
@@ -186,7 +182,7 @@ function ViewerHeader({ appConfig }: withAppTypes<{ appConfig: AppTypes.Config }
           {/* 点击后执行全局 undo 命令。 */}
           <Button
             variant="ghost"
-            className="hover:bg-primary-dark"
+            className="hover:bg-accent"
             onClick={() => {
               commandsManager.run('undo');
             }}
@@ -197,7 +193,7 @@ function ViewerHeader({ appConfig }: withAppTypes<{ appConfig: AppTypes.Config }
           {/* 点击后执行全局 redo 命令。 */}
           <Button
             variant="ghost"
-            className="hover:bg-primary-dark"
+            className="hover:bg-accent"
             onClick={() => {
               commandsManager.run('redo');
             }}

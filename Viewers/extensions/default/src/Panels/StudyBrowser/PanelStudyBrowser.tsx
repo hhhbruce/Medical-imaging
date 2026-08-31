@@ -427,7 +427,7 @@ function PanelStudyBrowser({
         />
         <Separator
           orientation="horizontal"
-          className="bg-black"
+          className="bg-border"
           thickness="2px"
         />
       </>

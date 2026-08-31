@@ -91,8 +91,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-reset',
-      label: 'Reset View',
-      tooltip: 'Reset View',
+      label: '重置视图',
+      tooltip: '重置视图',
       commands: 'resetViewport',
       evaluate: 'evaluate.action',
     },
@@ -102,8 +102,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-rotate-right',
-      label: 'Rotate Right',
-      tooltip: 'Rotate +90',
+      label: '向右旋转',
+      tooltip: '旋转 +90°',
       commands: 'rotateViewportCW',
       evaluate: [
         'evaluate.action',
@@ -119,8 +119,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-flip-horizontal',
-      label: 'Flip Horizontal',
-      tooltip: 'Flip Horizontally',
+      label: '水平翻转',
+      tooltip: '水平翻转',
       commands: 'flipViewportHorizontal',
       evaluate: [
         'evaluate.viewportProperties.toggle',
@@ -136,8 +136,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'link',
-      label: 'Image Slice Sync',
-      tooltip: 'Enable position synchronization on stack viewports',
+      label: '图像切片同步',
+      tooltip: '在堆栈视口上启用位置同步',
       commands: {
         commandName: 'toggleSynchronizer',
         commandOptions: {
@@ -164,8 +164,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-referenceLines',
-      label: 'Reference Lines',
-      tooltip: 'Show Reference Lines',
+      label: '参考线',
+      tooltip: '显示参考线',
       commands: 'toggleEnabledDisabledToolbar',
       listeners: {
         [ViewportGridService.EVENTS.ACTIVE_VIEWPORT_ID_CHANGED]: callbacks('ReferenceLines'),
@@ -185,8 +185,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'toggle-dicom-overlay',
-      label: 'Image Overlay',
-      tooltip: 'Toggle Image Overlay',
+      label: '图像叠加',
+      tooltip: '切换图像叠加',
       commands: 'toggleEnabledDisabledToolbar',
       evaluate: [
         'evaluate.cornerstoneTool.toggle',
@@ -202,8 +202,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-stack-scroll',
-      label: 'Stack Scroll',
-      tooltip: 'Stack Scroll',
+      label: '堆栈滚动',
+      tooltip: '堆栈滚动',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -213,8 +213,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-invert',
-      label: 'Invert',
-      tooltip: 'Invert Colors',
+      label: '反色',
+      tooltip: '反色',
       commands: 'invertViewport',
       evaluate: [
         'evaluate.viewportProperties.toggle',
@@ -230,8 +230,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-probe',
-      label: 'Probe',
-      tooltip: 'Probe',
+      label: '探针',
+      tooltip: '探针',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -241,8 +241,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'tool-probe',
-      label: 'Point',
-      tooltip: 'Point [P]',
+      label: '点',
+      tooltip: '点提示 [P]',
       commands: toggleToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -252,8 +252,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-cine',
-      label: 'Cine',
-      tooltip: 'Cine',
+      label: '电影播放',
+      tooltip: '电影播放',
       commands: 'toggleCine',
       evaluate: [
         'evaluate.cine',
@@ -269,8 +269,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-angle',
-      label: 'Angle',
-      tooltip: 'Angle',
+      label: '角度',
+      tooltip: '角度',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -280,8 +280,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'icon-tool-cobb-angle',
-      label: 'Cobb Angle',
-      tooltip: 'Cobb Angle',
+      label: 'Cobb 角',
+      tooltip: 'Cobb 角',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -291,8 +291,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-magnify',
-      label: 'Zoom-in',
-      tooltip: 'Zoom-in',
+      label: '放大镜',
+      tooltip: '放大镜',
       commands: setToolActiveToolbar,
       evaluate: [
         'evaluate.cornerstoneTool',
@@ -308,8 +308,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-calibration',
-      label: 'Calibration',
-      tooltip: 'Calibration Line',
+      label: '校准',
+      tooltip: '校准线',
       commands: setToolActiveToolbar,
       evaluate: [
         'evaluate.cornerstoneTool',
@@ -325,8 +325,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'dicom-tag-browser',
-      label: 'Dicom Tag Browser',
-      tooltip: 'Dicom Tag Browser',
+      label: 'DICOM 标签浏览器',
+      tooltip: 'DICOM 标签浏览器',
       commands: 'openDICOMTagViewer',
     },
   },
@@ -335,8 +335,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'icon-tool-loupe',
-      label: 'Magnify Probe',
-      tooltip: 'Magnify Probe',
+      label: '放大探针',
+      tooltip: '放大探针',
       commands: 'toggleActiveDisabledToolbar',
       evaluate: [
         'evaluate.cornerstoneTool.toggle.ifStrictlyDisabled',
@@ -352,8 +352,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'icon-tool-ultrasound-bidirectional',
-      label: 'Ultrasound Directional',
-      tooltip: 'Ultrasound Directional',
+      label: '超声方向',
+      tooltip: '超声方向',
       commands: setToolActiveToolbar,
       evaluate: [
         'evaluate.cornerstoneTool',
@@ -369,8 +369,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'icon-tool-window-region',
-      label: 'Window Level Region',
-      tooltip: 'Window Level Region',
+      label: '窗宽窗位区域',
+      tooltip: '窗宽窗位区域',
       commands: setToolActiveToolbar,
       evaluate: [
         'evaluate.cornerstoneTool',
@@ -386,8 +386,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-length',
-      label: 'Length',
-      tooltip: 'Length Tool',
+      label: '长度',
+      tooltip: '长度工具',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -397,8 +397,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-bidirectional',
-      label: 'Bidirectional',
-      tooltip: 'Bidirectional Tool',
+      label: '双向',
+      tooltip: '双向测量',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -408,8 +408,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-annotate',
-      label: 'Annotation',
-      tooltip: 'Arrow Annotate',
+      label: '标注',
+      tooltip: '箭头标注',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -419,8 +419,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-ellipse',
-      label: 'Ellipse',
-      tooltip: 'Ellipse ROI',
+      label: '椭圆',
+      tooltip: '椭圆 ROI',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -430,8 +430,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-rectangle',
-      label: 'Rectangle',
-      tooltip: 'Rectangle ROI',
+      label: '矩形',
+      tooltip: '矩形 ROI',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -441,8 +441,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'tool-rectangle',
-      label: 'BBox',
-      tooltip: 'Bounding Box [B]',
+      label: '边界框',
+      tooltip: '边界框 [B]',
       commands: toggleToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -452,8 +452,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-circle',
-      label: 'Circle',
-      tooltip: 'Circle Tool',
+      label: '圆形',
+      tooltip: '圆形工具',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -463,8 +463,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'icon-tool-freehand-roi',
-      label: 'Freehand ROI',
-      tooltip: 'Freehand ROI',
+      label: '自由手绘 ROI',
+      tooltip: '自由手绘 ROI',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -474,8 +474,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-tool-lasso-roi',
-      label: 'Lasso',
-      tooltip: 'Lasso [L]',
+      label: '套索',
+      tooltip: '套索 [L]',
       commands: toggleToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -485,8 +485,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-tool-freehand-roi',
-      label: 'Scribble',
-      tooltip: 'Scribble [S]',
+      label: '涂鸦',
+      tooltip: '涂鸦 [S]',
       commands: toggleToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -496,8 +496,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'icon-tool-spline-roi',
-      label: 'Spline ROI',
-      tooltip: 'Spline ROI',
+      label: '样条 ROI',
+      tooltip: '样条 ROI',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -507,8 +507,8 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'icon-tool-livewire',
-      label: 'Livewire tool',
-      tooltip: 'Livewire tool',
+      label: 'Livewire 工具',
+      tooltip: 'Livewire 工具',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -519,7 +519,7 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-window-level',
-      label: 'Window Level',
+      label: '窗宽窗位',
       commands: setToolActiveToolbar,
       evaluate: [
         'evaluate.cornerstoneTool',
@@ -536,7 +536,7 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'tool-move',
-      label: 'Pan',
+      label: '平移',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -547,7 +547,7 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'tool-zoom',
-      label: 'Zoom',
+      label: '缩放',
       commands: setToolActiveToolbar,
       evaluate: 'evaluate.cornerstoneTool',
     },
@@ -558,11 +558,11 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'tool-3d-rotate',
-      label: '3D Rotate',
+      label: '3D 旋转',
       commands: setToolActiveToolbar,
       evaluate: {
         name: 'evaluate.cornerstoneTool',
-        disabledText: 'Select a 3D viewport to enable this tool',
+        disabledText: '选择 3D 视口以启用此工具',
       },
     },
   },
@@ -571,7 +571,7 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolButton',
     props: {
       icon: 'tool-capture',
-      label: 'Capture',
+      label: '截图',
       commands: 'showDownloadViewportModal',
       evaluate: [
         'evaluate.action',
@@ -597,7 +597,7 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'tool-crosshair',
-      label: 'Crosshairs',
+      label: '十字线',
       commands: {
         commandName: 'setToolActiveToolbar',
         commandOptions: {
@@ -606,7 +606,7 @@ const toolbarButtons: Button[] = [
       },
       evaluate: {
         name: 'evaluate.cornerstoneTool',
-        disabledText: 'Select an MPR viewport to enable this tool',
+        disabledText: '选择 MPR 视口以启用此工具',
       },
     },
   },
@@ -616,8 +616,8 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'tool-nninter',
-      label: 'run segmentation',
-      tooltip: 'run',
+      label: '运行分割',
+      tooltip: '运行',
       commands: 'runAiSegmentation',
     },
   },
@@ -627,8 +627,8 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'Undo',
-      label: 'Undo',
-      tooltip: 'Undo (Ctrl+Z)',
+      label: '撤销',
+      tooltip: '撤销 (Ctrl+Z)',
       commands: 'undoNninter',
     },
   },
@@ -638,8 +638,8 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'tool-voxtell',
-      label: 'Text Prompt',
-      tooltip: 'VoxTell',
+      label: '文本提示',
+      tooltip: '文本提示分割（VoxTell）',
       commands: 'textPromptSegmentation',
     },
   },
@@ -657,8 +657,8 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'tool-voxtell',
-      label: 'Test Medgemma',
-      tooltip: 'Test Medgemma 1.5 4B',
+      label: '测试 Medgemma',
+      tooltip: '测试 Medgemma 1.5 4B',
       commands: 'testMedgemma',
     },
   },
@@ -669,7 +669,7 @@ const toolbarButtons: Button[] = [
       type: 'tool',
       icon: 'tool-sam',
       label: 'SAM2',
-      tooltip: 'sam2',
+      tooltip: 'SAM2',
       commands: 'sam2',
     },
   },
@@ -679,8 +679,8 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'tool-reset',
-      label: 'resetNninter',
-      tooltip: 'resetNninter',
+      label: '重置分割',
+      tooltip: '重置分割',
       commands: 'resetNninter',
     },
   },
@@ -690,8 +690,8 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'tool-target',
-      label: 'JumpToSegment',
-      tooltip: 'jump',
+      label: '跳转到分段',
+      tooltip: '跳转',
       commands: 'jumpToSegment',
     },
   },
@@ -701,8 +701,8 @@ const toolbarButtons: Button[] = [
     props: {
       type: 'tool',
       icon: 'eye-visible',
-      label: 'ToggleCurrentSegment',
-      tooltip: 'Visible',
+      label: '切换当前分段',
+      tooltip: '可见',
       commands: 'toggleCurrentSegment',
     },
   },
@@ -711,15 +711,15 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-tool-brush',
-      label: 'Brush',
+      label: '画笔',
       evaluate: {
         name: 'evaluate.cornerstone.segmentation',
         toolNames: ['CircularBrush', 'SphereBrush'],
-        disabledText: 'Create new segmentation to enable this tool.',
+        disabledText: '请先创建分割以启用此工具。',
       },
       options: [
         {
-          name: 'Radius (mm)',
+          name: '半径 (mm)',
           id: 'brush-radius',
           type: 'range',
           min: 0.5,
@@ -732,13 +732,13 @@ const toolbarButtons: Button[] = [
           },
         },
         {
-          name: 'Shape',
+          name: '形状',
           type: 'radio',
           id: 'brush-mode',
           value: 'CircularBrush',
           values: [
-            { value: 'CircularBrush', label: 'Circle' },
-            { value: 'SphereBrush', label: 'Sphere' },
+            { value: 'CircularBrush', label: '圆形' },
+            { value: 'SphereBrush', label: '球形' },
           ],
           commands: 'setToolActiveToolbar',
         },
@@ -750,14 +750,14 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-tool-interpolation',
-      label: 'Interpolate Labelmap',
+      label: '插值标注图',
       tooltip:
-        'Automatically fill in missing slices between drawn segments. Use brush or threshold tools on at least two slices, then click to interpolate across slices. Works in any direction. Volume must be reconstructable.',
+        '自动补全已绘制分段之间缺失的切片。请先在至少两个切片上使用画笔或阈值工具，然后点击以在切片之间进行插值。可沿任意方向进行。体积必须可重建。',
       evaluate: [
         'evaluate.cornerstone.segmentation',
         {
           name: 'evaluate.displaySetIsReconstructable',
-          disabledText: 'The current viewport cannot handle interpolation.',
+          disabledText: '当前视口无法进行插值。',
         },
       ],
       commands: 'interpolateLabelmap',
@@ -768,12 +768,12 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-tool-bidirectional-segment',
-      label: 'Segment Bidirectional',
+      label: '分割双向测量',
       tooltip:
-        'Automatically detects the largest length and width across slices for the selected segment and displays a bidirectional measurement.',
+        '自动检测所选分段在所有切片上的最大长径和短径，并显示双向测量。',
       evaluate: {
         name: 'evaluate.cornerstone.segmentation',
-        disabledText: 'Create new segmentation to enable this tool.',
+        disabledText: '请先创建分割以启用此工具。',
       },
       commands: 'runSegmentBidirectional',
     },
@@ -783,13 +783,13 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-tool-click-segment',
-      label: 'One Click Segment',
+      label: '一键分割',
       tooltip:
-        'Detects segmentable regions with one click. Hover for visual feedback—click when a plus sign appears to auto-segment the lesion.',
+        '单击即可检测可分割区域。悬停可预览——当出现加号时点击可自动分割病灶。',
       evaluate: {
         name: 'evaluate.cornerstone.segmentation',
         toolNames: ['RegionSegmentPlus'],
-        disabledText: 'Create new segmentation to enable this tool.',
+        disabledText: '请先创建分割以启用此工具。',
       },
       commands: 'setToolActiveToolbar',
     },
@@ -799,9 +799,9 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-labelmap-slice-propagation',
-      label: 'Labelmap Assist',
+      label: '标注图辅助',
       tooltip:
-        'Toggle AI assistance for segmenting nearby slices. After drawing on a slice, scroll to preview predictions. Press Enter to accept or Esc to skip.',
+        '切换 AI 辅助分割相邻切片。在切片上绘制后，滚动以预览预测结果。按 Enter 接受，按 Esc 跳过。',
       evaluate: [
         'evaluate.cornerstoneTool.toggle',
         {
@@ -822,9 +822,9 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-marker-labelmap',
-      label: 'Marker Guided Labelmap',
+      label: '标记引导标注图',
       tooltip:
-        'Use include/exclude markers to guide AI (SAM) segmentation. Click to place markers, Enter to accept results, Esc to reject, and N to go to the next slice while keeping markers.',
+        '使用包含/排除标记引导 AI（SAM）分割。点击放置标记，按 Enter 接受结果，按 Esc 拒绝，按 N 保留标记并转到下一层。',
       evaluate: [
         {
           name: 'evaluate.cornerstone.segmentation',
@@ -838,13 +838,13 @@ const toolbarButtons: Button[] = [
       },
       options: [
         {
-          name: 'Marker Mode',
+          name: '标记模式',
           type: 'radio',
           id: 'marker-mode',
           value: 'markerInclude',
           values: [
-            { value: 'markerInclude', label: 'Include' },
-            { value: 'markerExclude', label: 'Exclude' },
+            { value: 'markerInclude', label: '包含' },
+            { value: 'markerExclude', label: '排除' },
           ],
           commands: ({ commandsManager, options }) => {
             const markerModeOption = options.find(option => option.id === 'marker-mode');
@@ -860,7 +860,7 @@ const toolbarButtons: Button[] = [
           },
         },
         {
-          name: 'Clear Markers',
+          name: '清除标记',
           type: 'button',
           id: 'clear-markers',
           commands: 'clearMarkersForMarkerLabelmap',
@@ -873,14 +873,14 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-tool-eraser',
-      label: 'Eraser',
+      label: '橡皮擦',
       evaluate: {
         name: 'evaluate.cornerstone.segmentation',
         toolNames: ['CircularEraser', 'SphereEraser'],
       },
       options: [
         {
-          name: 'Radius (mm)',
+          name: '半径 (mm)',
           id: 'eraser-radius',
           type: 'range',
           min: 0.5,
@@ -893,13 +893,13 @@ const toolbarButtons: Button[] = [
           },
         },
         {
-          name: 'Shape',
+          name: '形状',
           type: 'radio',
           id: 'eraser-mode',
           value: 'CircularEraser',
           values: [
-            { value: 'CircularEraser', label: 'Circle' },
-            { value: 'SphereEraser', label: 'Sphere' },
+            { value: 'CircularEraser', label: '圆形' },
+            { value: 'SphereEraser', label: '球形' },
           ],
           commands: 'setToolActiveToolbar',
         },
@@ -911,7 +911,7 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-tool-threshold',
-      label: 'Threshold Tool',
+      label: '阈值工具',
       evaluate: {
         name: 'evaluate.cornerstone.segmentation',
         toolNames: [
@@ -923,7 +923,7 @@ const toolbarButtons: Button[] = [
       },
       options: [
         {
-          name: 'Radius (mm)',
+          name: '半径 (mm)',
           id: 'threshold-radius',
           type: 'range',
           min: 0.5,
@@ -943,13 +943,13 @@ const toolbarButtons: Button[] = [
           },
         },
         {
-          name: 'Shape',
+          name: '形状',
           type: 'radio',
           id: 'threshold-shape',
           value: 'ThresholdCircularBrush',
           values: [
-            { value: 'ThresholdCircularBrush', label: 'Circle' },
-            { value: 'ThresholdSphereBrush', label: 'Sphere' },
+            { value: 'ThresholdCircularBrush', label: '圆形' },
+            { value: 'ThresholdSphereBrush', label: '球形' },
           ],
           commands: ({ value, commandsManager, options }) => {
             const optionsDynamic = options.find(option => option.id === 'dynamic-mode');
@@ -969,13 +969,13 @@ const toolbarButtons: Button[] = [
           },
         },
         {
-          name: 'Threshold',
+          name: '阈值',
           type: 'radio',
           id: 'dynamic-mode',
           value: 'ThresholdDynamic',
           values: [
-            { value: 'ThresholdDynamic', label: 'Dynamic' },
-            { value: 'ThresholdRange', label: 'Range' },
+            { value: 'ThresholdDynamic', label: '动态' },
+            { value: 'ThresholdRange', label: '范围' },
           ],
           commands: ({ value, commandsManager, options }) => {
             const thresholdRangeOption = options.find(option => option.id === 'threshold-shape');
@@ -1004,7 +1004,7 @@ const toolbarButtons: Button[] = [
           },
         },
         {
-          name: 'ThresholdRange',
+          name: '阈值范围',
           type: 'double-range',
           id: 'threshold-range',
           min: -1000,
@@ -1028,22 +1028,22 @@ const toolbarButtons: Button[] = [
     uiType: 'ohif.toolBoxButton',
     props: {
       icon: 'icon-tool-shape',
-      label: 'Shapes',
+      label: '形状',
       evaluate: {
         name: 'evaluate.cornerstone.segmentation',
         toolNames: ['CircleScissor', 'SphereScissor', 'RectangleScissor'],
-        disabledText: 'Create new segmentation to enable shapes tool.',
+        disabledText: '请先创建分割以启用形状工具。',
       },
       options: [
         {
-          name: 'Shape',
+          name: '形状',
           type: 'radio',
           value: 'CircleScissor',
           id: 'shape-mode',
           values: [
-            { value: 'CircleScissor', label: 'Circle' },
-            { value: 'SphereScissor', label: 'Sphere' },
-            { value: 'RectangleScissor', label: 'Rectangle' },
+            { value: 'CircleScissor', label: '圆形' },
+            { value: 'SphereScissor', label: '球形' },
+            { value: 'RectangleScissor', label: '矩形' },
           ],
           commands: 'setToolActiveToolbar',
         },

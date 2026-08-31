@@ -4,7 +4,7 @@ let liveMode = true;
 let posNeg = false;
 let refineNew = false;
 let textPromptReplaceNew = false; // Replace/New toggle for Text Prompt Segmentation
-let selectedModel: 'nnInteractive' | 'sam2' | 'medsam2' | 'sam3' = 'nnInteractive'; // Model selection: nnInteractive, SAM2, MedSAM2, or SAM3
+let selectedModel: string = 'nnInteractive'; // Model selection is provided by the backend registry
 let locked = false;
 let inferenceInFlight = false;
 let pendingInferenceRun = false;
@@ -28,7 +28,11 @@ export type VlmProviderId =
   | 'kimi'
   | 'qwen'
   | 'gemma'
-  | 'vllm';
+  | 'vllm'
+  | 'custom';
+
+/** Wire protocol for a user-configured custom VLM endpoint. */
+export type CustomEndpointType = 'openai-responses' | 'openai-chat' | 'anthropic';
 
 /** vLLM OpenAI-compatible server: served model family (empty = infer from model id). */
 export type VllmFamilyId = '' | 'internvl' | 'qwen' | 'kimi' | 'gemma';
@@ -65,6 +69,18 @@ let vllmBaseUrl = 'http://host.docker.internal:8000/v1';
 let vllmFamily: VllmFamilyId = '';
 let vllmThinkingLevel: VllmThinkingLevel = 'on';
 
+/** Multi-agent workflow used by the custom OpenAI-compatible endpoint. */
+export type CustomMasStrategy = 'single' | 'discussion' | 'clinical-panel' | 'triage-panel';
+
+let customMasStrategy: CustomMasStrategy = 'single';
+
+/** User-configured custom VLM endpoint (base_url + api_key + endpoint type). */
+let customBaseUrl = '';
+let customApiKey = '';
+let customEndpointType: CustomEndpointType = 'openai-chat';
+let customModel = '';
+let customModels: string[] = [];
+
 export const toolboxState = {
   getLiveMode: () => liveMode,
   setLiveMode: (enabled: boolean) => {
@@ -96,7 +112,7 @@ export const toolboxState = {
   },
   // Model selection methods
   getSelectedModel: () => selectedModel,
-  setSelectedModel: (model: 'nnInteractive' | 'sam2' | 'medsam2' | 'sam3') => {
+  setSelectedModel: (model: string) => {
     selectedModel = model;
   },
   // Legacy methods for backward compatibility (deprecated)
@@ -220,5 +236,29 @@ export const toolboxState = {
   getVllmThinkingLevel: (): VllmThinkingLevel => vllmThinkingLevel,
   setVllmThinkingLevel: (level: VllmThinkingLevel) => {
     vllmThinkingLevel = level;
+  },
+  getCustomBaseUrl: () => customBaseUrl,
+  setCustomBaseUrl: (url: string) => {
+    customBaseUrl = url;
+  },
+  getCustomApiKey: () => customApiKey,
+  setCustomApiKey: (key: string) => {
+    customApiKey = key;
+  },
+  getCustomEndpointType: (): CustomEndpointType => customEndpointType,
+  setCustomEndpointType: (type: CustomEndpointType) => {
+    customEndpointType = type;
+  },
+  getCustomMasStrategy: (): CustomMasStrategy => customMasStrategy,
+  setCustomMasStrategy: (strategy: CustomMasStrategy) => {
+    customMasStrategy = strategy;
+  },
+  getCustomModel: () => customModel,
+  setCustomModel: (model: string) => {
+    customModel = model;
+  },
+  getCustomModels: (): string[] => customModels,
+  setCustomModels: (models: string[]) => {
+    customModels = models;
   },
 };

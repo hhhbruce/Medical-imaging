@@ -4,11 +4,12 @@ import { Icons } from '../Icons';
 import { Button } from '../Button';
 import { cn } from '../../lib/utils';
 
-const baseClasses = '!rounded-lg inline-flex items-center justify-center';
-const defaultClasses = 'bg-transparent text-foreground/80 hover:bg-background hover:text-highlight';
-const activeClasses = 'bg-highlight text-background hover:!bg-highlight/80';
+const baseClasses = '!rounded-lg inline-flex items-center justify-center transition-colors';
+const defaultClasses = 'bg-transparent text-foreground/70 hover:bg-accent hover:text-primary';
+const activeClasses = 'bg-primary text-primary-foreground hover:!bg-primary/90';
 const disabledClasses =
-  'text-common-bright hover:bg-primary-dark hover:text-primary-light opacity-40 cursor-not-allowed';
+  'text-foreground/40 disabled:!opacity-100 cursor-not-allowed';
+const focusClasses = 'focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-offset-2';
 
 const sizeClasses = {
   default: {
@@ -55,6 +56,7 @@ function ToolButton(props: ToolButtonProps) {
   const buttonClasses = cn(
     baseClasses,
     buttonSizeClass,
+    focusClasses,
     disabled ? disabledClasses : isActive ? activeClasses : defaultClasses,
     className
   );

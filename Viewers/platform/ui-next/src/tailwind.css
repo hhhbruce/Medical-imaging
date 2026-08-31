@@ -8,70 +8,73 @@
 
 @layer base {
   :root {
-    --highlight: 191 74% 63%;
-    --neutral: 213 22% 59%;
-    --background: 236 62% 5%;
-    --foreground: 0 0% 98%;
-    --card: 234 64% 10%;
-    --card-foreground: 0 0% 98%;
-    --popover: 219 90% 15%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 214 98% 60%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 214 66% 48%;
-    --secondary-foreground: 200 50% 84%;
-    --muted: 234 64% 10%;
-    --muted-foreground: 200 46% 65%;
-    --accent: 217 79% 24%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 236 52% 30%;
-    --ring: 214 98% 60%;
+    /* "Reading room" dark chrome: near-black slate surfaces keep the room dim
+       while the viewport stays the brightest element on screen. One clinical
+       blue accent carries all interactive state. */
+    --highlight: 212 92% 62%;
+    --neutral: 215 11% 58%;
+    --background: 220 16% 8%;
+    --foreground: 214 18% 88%;
+    --card: 220 14% 11%;
+    --card-foreground: 214 18% 88%;
+    --popover: 220 15% 12%;
+    --popover-foreground: 214 18% 88%;
+    --primary: 212 92% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 218 12% 17%;
+    --secondary-foreground: 214 18% 88%;
+    --muted: 218 12% 15%;
+    --muted-foreground: 215 11% 60%;
+    --accent: 218 13% 19%;
+    --accent-foreground: 214 20% 92%;
+    --destructive: 0 72% 56%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 219 12% 20%;
+    --input: 219 12% 22%;
+    --ring: 212 92% 60%;
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
     --radius: 0.5rem;
-    --success-bg: hsl(143, 85%, 96%);
-    --success-border: hsl(145, 92%, 91%);
-    --success-text: hsl(140, 100%, 27%);
+    --success-bg: hsl(143, 32%, 16%);
+    --success-border: hsl(143, 30%, 24%);
+    --success-text: hsl(143, 60%, 55%);
 
-    --info-bg: hsl(208, 100%, 97%);
-    --info-border: hsl(221, 91%, 91%);
-    --info-text: hsl(210, 92%, 45%);
+    --info-bg: hsl(210, 40%, 16%);
+    --info-border: hsl(210, 35%, 26%);
+    --info-text: hsl(210, 80%, 62%);
 
-    --warning-bg: hsl(49, 100%, 97%);
-    --warning-border: hsl(49, 91%, 91%);
-    --warning-text: hsl(31, 92%, 45%);
+    --warning-bg: hsl(38, 45%, 16%);
+    --warning-border: hsl(38, 40%, 26%);
+    --warning-text: hsl(38, 90%, 58%);
 
-    --error-bg: hsl(359, 100%, 97%);
-    --error-border: hsl(359, 100%, 94%);
-    --error-text: hsl(360, 100%, 45%);
+    --error-bg: hsl(355, 45%, 17%);
+    --error-border: hsl(355, 40%, 27%);
+    --error-text: hsl(355, 90%, 65%);
   }
 
   .dark {
-    --background: 0 0% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 234 64% 10%;
-    --card-foreground: 0 0% 98%;
-    --popover: 0 0% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 214 98% 60%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 0 0% 14.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 0 0% 14.9%;
-    --muted-foreground: 0 0% 63.9%;
-    --accent: 0 0% 14.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 14.9%;
-    --input: 236 52% 30%;
-    --ring: 214 98% 60%;
+    --background: 220 16% 8%;
+    --foreground: 214 18% 88%;
+    --card: 220 14% 11%;
+    --card-foreground: 214 18% 88%;
+    --popover: 220 15% 12%;
+    --popover-foreground: 214 18% 88%;
+    --primary: 212 92% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 218 12% 17%;
+    --secondary-foreground: 214 18% 88%;
+    --muted: 218 12% 15%;
+    --muted-foreground: 215 11% 60%;
+    --accent: 218 13% 19%;
+    --accent-foreground: 214 20% 92%;
+    --destructive: 0 72% 56%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 219 12% 20%;
+    --input: 219 12% 22%;
+    --ring: 212 92% 60%;
     --chart-1: 220 70% 50%;
     --chart-2: 160 60% 45%;
     --chart-3: 30 80% 55%;
@@ -210,19 +213,35 @@
 @layer base {
   html {
     font-family: 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   body {
-    @apply !bg-black;
+    @apply !bg-background text-foreground;
+  }
+}
+
+@layer components {
+  .clinical-surface {
+    @apply rounded-lg border border-border bg-card shadow-sm;
+  }
+
+  .clinical-filter-bar {
+    @apply border-b border-border bg-accent/60 backdrop-blur-sm;
+  }
+
+  .clinical-input {
+    @apply rounded-md border border-input bg-input/30 px-3 py-2 text-sm text-foreground transition-colors placeholder:text-muted-foreground focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20;
   }
 }
 
 h2.section-header {
-  @apply py-4 text-2xl font-normal text-white;
+  @apply py-4 text-2xl font-normal text-foreground;
 }
 
 h3.section-header {
-  @apply py-3 text-xl text-white;
+  @apply py-3 text-xl text-foreground;
 }
 
 .row {
@@ -255,25 +274,25 @@ input[type='number'] {
   -moz-appearance: textfield; /* For Firefox */
 }
 
-/* Custom scrollbar styles for side panels */
+/* Custom scrollbar styles for side panels (reading-room dark) */
 .side-panel-scrollable::-webkit-scrollbar {
   width: 8px;
 }
 
 .side-panel-scrollable::-webkit-scrollbar-track {
-  background: #090c29;
+  background: #12151b;
 }
 
 .side-panel-scrollable::-webkit-scrollbar-thumb {
-  background: #4a5568;
+  background: #2a313d;
   border-radius: 4px;
 }
 
 .side-panel-scrollable::-webkit-scrollbar-thumb:hover {
-  background: #5a6578;
+  background: #3a4352;
 }
 
 .side-panel-scrollable {
-  scrollbar-color: #4a5568 #090c29;
+  scrollbar-color: #2a313d #12151b;
   scrollbar-width: thin;
 }

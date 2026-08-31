@@ -12,7 +12,7 @@
 # syntax=docker/dockerfile:1.7-labs
 
 # ── Stage 1: deps ────────────────────────────────────────────────────────────
-# Rebuilds only when requirements.txt, sam2/, or sam3/ change.
+# Rebuilds only when requirements.txt or sam2/ change.
 # Switch from cuda:devel (~6 GB) to cuda:runtime (~3 GB) — inference needs no compiler.
 FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04 AS deps
 
@@ -33,16 +33,14 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /code
-RUN mkdir -p /install /install-3
+RUN mkdir -p /install
 
 COPY ./sam2/. /install/
-COPY ./sam3/. /install-3/
 COPY ./monai-label/requirements.txt ./
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip setuptools wheel && \
     pip install -e /install/. && \
-    pip install -e /install-3/. && \
     pip install -r requirements.txt
 
 # ── Stage 2: app ─────────────────────────────────────────────────────────────
@@ -50,7 +48,6 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 FROM deps AS app
 
 RUN mkdir -p /code/assets /code/checkpoints /code/apps
-COPY ./sam3/assets/bpe_simple_vocab_16e6.txt.gz /code/assets/
 
 ENV LD_LIBRARY_PATH="/usr/local/nvidia/lib64"
 ENV PATH="$PATH:/code/monailabel/scripts"

@@ -1,7 +1,6 @@
 import * as cornerstoneTools from '@cornerstonejs/tools';
 import React, { useState, useEffect } from 'react';
 import { Separator, Button, Tooltip, TooltipTrigger, TooltipContent, Icons } from '@ohif/ui-next';
-import { useTranslation } from 'react-i18next';
 import { roundNumber } from '@ohif/core/src/utils';
 import { useSystem } from '@ohif/core/src';
 
@@ -19,7 +18,6 @@ export const CustomSegmentStatisticsHeader = ({
 }: CustomSegmentStatisticsHeaderProps) => {
   const { servicesManager, commandsManager } = useSystem();
   const { segmentationService } = servicesManager.services;
-  const { t } = useTranslation('SegmentationTable');
   
   // Add state to track if bidirectional has been computed
   const [bidirectionalComputed, setBidirectionalComputed] = useState(false);
@@ -59,7 +57,7 @@ export const CustomSegmentStatisticsHeader = ({
                 size="sm"
                 className="text-primary flex items-center px-0"
               >
-                <span>{t('Can\'t compute bidirectional measurement')}</span>
+                <span>无法计算双向测量</span>
               </Button>
             </TooltipTrigger>
           </Tooltip>
@@ -86,10 +84,10 @@ export const CustomSegmentStatisticsHeader = ({
       <div className="flex items-center justify-between">
         <div className="text-foreground">
           <div>
-            L: {roundNumber(max)} {unit}
+            长: {roundNumber(max)} {unit}
           </div>
           <div>
-            W: {roundNumber(min)} {unit}
+            宽: {roundNumber(min)} {unit}
           </div>
         </div>
         <div className="flex gap-2">
@@ -124,7 +122,7 @@ export const CustomSegmentStatisticsHeader = ({
                 )}
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">{t('Toggle visibility')}</TooltipContent>
+            <TooltipContent side="bottom">切换可见性</TooltipContent>
           </Tooltip>
         </div>
       </div>

@@ -149,6 +149,9 @@ export default defineConfig({
       '/monai': {
         target: MONAI_PROXY_DOMAIN,
         changeOrigin: true,
+        pathRewrite: {
+          '^/monai': '',
+        },
       },
       '/dicomweb': {
         target: 'http://localhost:5000',

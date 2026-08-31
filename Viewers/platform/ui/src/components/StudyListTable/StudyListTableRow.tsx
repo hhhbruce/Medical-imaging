@@ -13,32 +13,25 @@ const StudyListTableRow = props => {
         className="select-none"
         data-cy={dataCY}
       >
-        <td
-          className={classnames('border-0 p-0', {
-            'border-secondary-light bg-primary-dark border-b': isExpanded,
-          })}
-        >
+        <td className="border-0 p-0">
           <div
             className={classnames(
-              'w-full transition duration-300',
+              'clinical-surface w-full overflow-hidden transition-all duration-200',
               {
-                'border-primary-light hover:border-secondary-light mb-2 overflow-visible rounded border':
-                  isExpanded,
-              },
-              {
-                'border-transparent': !isExpanded,
+                'ring-primary/30 shadow-md ring-2': isExpanded,
+                'hover:border-primary/30 hover:shadow-md': !isExpanded,
               }
             )}
           >
-            <table className={classnames('w-full p-4')}>
+            <table className="w-full">
               <tbody>
                 <tr
                   className={classnames(
-                    'hover:bg-secondary-main cursor-pointer transition duration-300',
+                    'cursor-pointer transition-colors duration-200',
                     {
-                      'bg-primary-dark': !isExpanded,
-                    },
-                    { 'bg-secondary-dark': isExpanded }
+                      'bg-accent/40': isExpanded,
+                      'hover:bg-accent/30': !isExpanded,
+                    }
                   )}
                   onClick={onClickRow}
                   data-cy={clickableCY}
@@ -49,8 +42,7 @@ const StudyListTableRow = props => {
                       <td
                         key={index}
                         className={classnames(
-                          'truncate px-4 py-2 text-base',
-                          { 'border-secondary-light border-b': !isExpanded },
+                          'truncate px-4 py-3 text-sm',
                           getGridWidthClass(gridCol) || ''
                         )}
                         style={{
@@ -58,29 +50,30 @@ const StudyListTableRow = props => {
                         }}
                         title={title}
                       >
-                        <div className="flex">
+                        <div className="flex items-center">
                           {index === 0 && (
-                            <div>
+                            <div className="text-primary mr-3 shrink-0">
                               {isExpanded ? (
-                                <Icons.ChevronOpen className="-mt-1 mr-4 inline-flex" />
+                                <Icons.ChevronOpen className="inline-flex" />
                               ) : (
-                                <Icons.ChevronClosed className="-mt-1 mr-4 inline-flex rotate-180" />
+                                <Icons.ChevronClosed className="inline-flex rotate-180" />
                               )}
                             </div>
                           )}
-                          <div
-                            className={classnames({ 'overflow-hidden': true }, { truncate: true })}
-                          >
-                            {content}
-                          </div>
+                          <div className={classnames('overflow-hidden truncate')}>{content}</div>
                         </div>
                       </td>
                     );
                   })}
                 </tr>
                 {isExpanded && (
-                  <tr className="max-h-0 w-full select-text overflow-hidden bg-black">
-                    <td colSpan={row.length}>{expandedContent}</td>
+                  <tr className="max-h-0 w-full select-text overflow-hidden border-t border-border bg-card">
+                    <td
+                      className="p-4"
+                      colSpan={row.length}
+                    >
+                      {expandedContent}
+                    </td>
                   </tr>
                 )}
               </tbody>
@@ -94,13 +87,10 @@ const StudyListTableRow = props => {
 
 StudyListTableRow.propTypes = {
   tableData: PropTypes.shape({
-    /** A table row represented by an array of "cell" objects */
     row: PropTypes.arrayOf(
       PropTypes.shape({
         key: PropTypes.string.isRequired,
-        /** Optional content to render in row's cell */
         content: PropTypes.node,
-        /** Title attribute to use for provided content */
         title: PropTypes.string,
         gridCol: PropTypes.number.isRequired,
       })

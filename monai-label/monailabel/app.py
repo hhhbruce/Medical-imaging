@@ -13,11 +13,11 @@ import os
 import pathlib
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from monailabel.config import settings
@@ -30,14 +30,17 @@ from monailabel.endpoints import (
     login,
     logs,
     model,
+    model_registry,
     nninter_session,
     ohif,
     proxy,
     scoring,
     session,
    # train,
+    vlm,
     wsi_infer,
 )
+from monailabel.interfaces.exception import MONAILabelError, MONAILabelException
 from monailabel.interfaces.utils.app import app_instance, clear_cache
 
 origins = [str(origin) for origin in settings.MONAI_LABEL_CORS_ORIGINS] if settings.MONAI_LABEL_CORS_ORIGINS else ["*"]
@@ -81,6 +84,26 @@ app.mount(
     name="static",
 )
 
+_MONAI_ERROR_HTTP_STATUS = {
+    MONAILabelError.INVALID_INPUT: 400,
+    MONAILabelError.APP_ERROR: 400,
+    MONAILabelError.SERVER_ERROR: 500,
+    MONAILabelError.UNKNOWN_ERROR: 500,
+    MONAILabelError.CLASS_INIT_ERROR: 500,
+    MONAILabelError.MODEL_IMPORT_ERROR: 500,
+    MONAILabelError.INFERENCE_ERROR: 500,
+    MONAILabelError.TRANSFORM_ERROR: 500,
+    MONAILabelError.APP_INIT_ERROR: 500,
+    MONAILabelError.APP_INFERENCE_FAILED: 500,
+    MONAILabelError.APP_TRAIN_FAILED: 500,
+}
+
+
+@app.exception_handler(MONAILabelException)
+async def monailabel_exception_handler(request: Request, exc: MONAILabelException):
+    status_code = _MONAI_ERROR_HTTP_STATUS.get(exc.error, 500)
+    return JSONResponse(status_code=status_code, content={"detail": exc.msg})
+
 if settings.MONAI_LABEL_AUTH_ENABLE:
     app.include_router(login.router, prefix=settings.MONAI_LABEL_API_STR)
 
@@ -97,7 +120,10 @@ app.include_router(logs.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(ohif.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(proxy.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(session.router, prefix=settings.MONAI_LABEL_API_STR)
+app.include_router(model_registry.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(nninter_session.router, prefix=settings.MONAI_LABEL_API_STR)
+app.include_router(nninter_session.model_router, prefix=settings.MONAI_LABEL_API_STR)
+app.include_router(vlm.router, prefix=settings.MONAI_LABEL_API_STR)
 
 
 @app.get("/", include_in_schema=False)

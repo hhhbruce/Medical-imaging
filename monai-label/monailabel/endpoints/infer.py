@@ -42,6 +42,7 @@ from monailabel.datastore.dicom import DICOMWebDatastore
 from monailabel.datastore.utils.convert import binary_to_image, nifti_to_dicom_seg, itk_image_to_dicom_seg
 from monailabel.endpoints.user.auth import RBAC, User
 from monailabel.interfaces.app import MONAILabelApp
+from monailabel.interfaces.exception import MONAILabelException
 from monailabel.interfaces.utils.app import app_instance
 from monailabel.utils.others.generic import get_mime_type, remove_file
 from monailabel.utils.others.stream import stream_multipart
@@ -49,6 +50,17 @@ from monailabel.utils.others.stream import stream_multipart
 from monailabel.datastore.utils.dicom import dicom_web_upload_dcm
 
 logger = logging.getLogger(__name__)
+
+_SENSITIVE_REQUEST_FIELDS = {"custom_api_key", "api_key", "authorization"}
+
+
+def _redact_request(request):
+    """Return a shallow copy safe for logging without credentials."""
+    safe_request = dict(request)
+    for field in _SENSITIVE_REQUEST_FIELDS:
+        if field in safe_request:
+            safe_request[field] = "<redacted>"
+    return safe_request
 
 router = APIRouter(
     prefix="/infer",
@@ -98,9 +110,21 @@ def send_response(datastore, result, output, background_tasks):
     res_img = result.get("file")
     res_json = result.get("params")
 
+    # VLM text result: basic_infer returns the assistant's text as the "file" value.
+    if (
+        type(res_img) == str
+        and not os.path.exists(res_img)
+        and isinstance(res_json, dict)
+        and res_json.get("vlm_result") is True
+    ):
+        return Response(content=res_img, media_type="text/plain")
+
     if type(res_img) == str:
         if not os.path.exists(res_img):
-            res_img = datastore.get_label_uri(res_img, res_tag)
+            label_tag = (
+                res_json.get("label_tag") if isinstance(res_json, dict) else None
+            ) or "final"
+            res_img = datastore.get_label_uri(res_img, label_tag)
         else:
             background_tasks.add_task(remove_file, res_img)
 
@@ -172,7 +196,12 @@ def run_inference(
     server_request_ts = time.time()  # HTTP request received; before MONAI image download
     request = {"model": model, "image": image}
 
-    if not file and not image and not session_id:
+    # Text-only custom VLM calls (nninter == "custom") carry no DICOM input at all;
+    # the custom branch in basic_infer handles them before any image loading.
+    _request_params = json.loads(params) if params else {}
+    is_text_only_custom_vlm = str(_request_params.get("nninter") or "") in ("custom", "mas")
+
+    if not file and not image and not session_id and not is_text_only_custom_vlm:
         raise HTTPException(status_code=500, detail="Neither Image nor File not Session ID input is provided")
 
     instance: MONAILabelApp = app_instance()
@@ -213,8 +242,19 @@ def run_inference(
             request["image"] = session.image
             request["session"] = session.to_json()
 
-    logger.info(f"Infer Request: {request}")
-    result = instance.infer(request)
+    logger.info(f"Infer Request: {_redact_request(request)}")
+    try:
+        result = instance.infer(request)
+    except MONAILabelException:
+        raise
+    except Exception as err:
+        if str(request.get("nninter") or "") in ("custom", "mas"):
+            logger.exception("Custom VLM upstream request failed")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Custom VLM upstream request failed: {type(err).__name__}: {err}",
+            ) from err
+        raise
     prompt_json = result['params']
     if result is None:
         raise HTTPException(status_code=500, detail="Failed to execute infer")

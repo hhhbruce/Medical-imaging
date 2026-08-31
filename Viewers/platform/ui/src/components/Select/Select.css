@@ -1,9 +1,9 @@
 .customSelect__wrapper .customSelect__control {
-  @apply border-secondary-light w-full rounded border bg-black text-sm leading-tight text-white shadow transition duration-300;
+  @apply border-inputfield-main w-full rounded-md border bg-white text-sm leading-tight text-foreground shadow-sm transition duration-200;
   min-height: 28px;
 }
 .customSelect__wrapper .customSelect__control:hover {
-  @apply border-gray-500;
+  @apply border-primary/40;
 }
 
 .customSelect__control {
@@ -16,14 +16,14 @@
 }
 
 .customSelect__input {
-  @apply text-white !important;
+  @apply text-foreground !important;
   font-size: 0.75rem !important;
   line-height: 1.25 !important;
 }
 
 .customSelect__wrapper .customSelect__control:focus,
 .customSelect__wrapper .customSelect__control--menu-is-open {
-  @apply border-gray-500 outline-none;
+  @apply border-primary outline-none ring-2 ring-primary/20;
 }
 
 .customSelect--is-disabled .customSelect__control--is-disabled {
@@ -42,8 +42,8 @@
   padding: 4px;
 }
 
- .customSelect__option {
-  color: #d6d6d6 !important;
+.customSelect__option {
+  color: #0f2744 !important;
   font-size: 14px !important;
   display: flex !important;
   align-items: center !important;
@@ -51,11 +51,11 @@
 }
 
 .customSelect__option--is-selected {
-  @apply bg-transparent !important;
+  @apply bg-accent text-primary !important;
 }
 
 .customSelect__wrapper .customSelect__single-value {
-  @apply text-aqua-pale pl-1;
+  @apply text-foreground pl-1;
   max-width: calc(100% - 20px);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -86,26 +86,27 @@
   border-radius: 10px;
 }
 .customSelect__menu-portal .customSelect__placeholder {
-  @apply text-aqua-pale pl-1.5;
+  @apply text-muted-foreground pl-1.5;
 }
 
 .customSelect__menu-portal .customSelect__menu-list::-webkit-scrollbar-thumb {
-  background-color: #0944b3;
+  background-color: #1d5ebf;
   border-radius: 10px;
 }
 
 .customSelect__option--is-focused {
-  background-color: #0944b391 !important;
+  background-color: #e8f1ff !important;
 }
 
 .customSelect__menu-portal .customSelect__option:hover {
-  background-color: #0944b391;
+  background-color: #e8f1ff;
 }
 
 .customSelect__menu-portal .customSelect__menu {
-  border: 2px solid #0944b3;
-  border-radius: 6px;
-  background-color: #151515 !important;
+  border: 1px solid #c5d4e8;
+  border-radius: 8px;
+  background-color: #ffffff !important;
+  box-shadow: 0 4px 12px rgba(15, 39, 68, 0.08);
 }
 
 .css-1hwfws3 {

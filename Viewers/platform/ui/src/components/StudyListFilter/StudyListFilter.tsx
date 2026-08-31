@@ -30,64 +30,67 @@ const StudyListFilter = ({
 
   return (
     <React.Fragment>
-      <div>
-        <div className="bg-black">
-          <div className="container relative mx-auto flex flex-col pt-5">
-            <div className="mb-5 flex flex-row justify-between">
-              <div className="flex min-w-[1px] shrink flex-row items-center gap-6">
+      <div className="border-border border-b bg-card">
+        <div className="container relative mx-auto flex flex-col px-6 pt-6 pb-4">
+          <div className="flex flex-row items-end justify-between gap-4">
+            <div className="flex min-w-[1px] shrink flex-row flex-wrap items-center gap-5">
+              <div>
+                <p className="text-primary mb-1 text-xs font-medium tracking-wide uppercase">
+                  AI 影像平台
+                </p>
                 <Typography
                   variant="h6"
-                  className="text-white"
+                  className="text-foreground text-2xl font-semibold"
                 >
                   {t('StudyList')}
                 </Typography>
-                {getDataSourceConfigurationComponent && getDataSourceConfigurationComponent()}
-                {onUploadClick && (
-                  <div
-                    className="text-primary-active flex cursor-pointer items-center gap-2 self-center text-lg font-semibold"
-                    onClick={onUploadClick}
-                  >
-                    <Icons.Upload />
-                    <span>{t('Upload')}</span>
-                  </div>
-                )}
               </div>
-              <div className="flex h-[34px] flex-row items-center">
-                {/* TODO revisit the completely rounded style of button used for clearing the study list filter - for now use LegacyButton*/}
-                {isFiltering && (
-                  <LegacyButton
-                    rounded="full"
-                    variant="outlined"
-                    color="primaryActive"
-                    border="primaryActive"
-                    className="mx-8"
-                    startIcon={<Icons.Cancel />}
-                    onClick={clearFilters}
-                  >
-                    {t('ClearFilters')}
-                  </LegacyButton>
-                )}
-
+              {getDataSourceConfigurationComponent && getDataSourceConfigurationComponent()}
+              {onUploadClick && (
+                <button
+                  type="button"
+                  className="text-primary hover:bg-accent inline-flex cursor-pointer items-center gap-2 self-center rounded-md px-3 py-2 text-sm font-medium transition-colors"
+                  onClick={onUploadClick}
+                >
+                  <Icons.Upload />
+                  <span>{t('Upload')}</span>
+                </button>
+              )}
+            </div>
+            <div className="flex h-[34px] flex-row items-center gap-3">
+              {isFiltering && (
+                <LegacyButton
+                  rounded="full"
+                  variant="outlined"
+                  color="primaryActive"
+                  border="primaryActive"
+                  startIcon={<Icons.Cancel />}
+                  onClick={clearFilters}
+                >
+                  {t('ClearFilters')}
+                </LegacyButton>
+              )}
+              <div className="clinical-surface flex items-baseline gap-2 px-4 py-2">
                 <Typography
                   variant="h6"
-                  className="mr-2"
+                  className="text-primary text-2xl font-semibold tabular-nums"
                   data-cy={'num-studies'}
                 >
                   {numOfStudies > 100 ? '>100' : numOfStudies}
                 </Typography>
                 <Typography
                   variant="h6"
-                  className="text-primary-light"
+                  className="text-muted-foreground text-sm font-normal"
                 >
-                  {`${t('Studies')} `}
+                  {t('Studies')}
                 </Typography>
               </div>
             </div>
           </div>
         </div>
       </div>
-      <div className="sticky -top-1 z-10 mx-auto border-b-4 border-black">
-        <div className="bg-primary-dark pt-3 pb-3">
+      <div className="clinical-filter-bar sticky -top-1 z-10">
+        <div className="py-4">
           <InputGroup
             inputMeta={filtersMeta}
             values={filterValues}
@@ -98,11 +101,9 @@ const StudyListFilter = ({
           />
         </div>
         {numOfStudies > 100 && (
-          <div className="container m-auto">
-            <div className="bg-primary-main rounded-b py-1 text-center text-base">
-              <p className="text-white">
-                {t('Filter list to 100 studies or less to enable sorting')}
-              </p>
+          <div className="container m-auto px-6 pb-3">
+            <div className="bg-primary/10 text-primary rounded-md py-2 text-center text-sm">
+              <p>{t('Filter list to 100 studies or less to enable sorting')}</p>
             </div>
           </div>
         )}
@@ -114,16 +115,11 @@ const StudyListFilter = ({
 StudyListFilter.propTypes = {
   filtersMeta: PropTypes.arrayOf(
     PropTypes.shape({
-      /** Identifier used to map a field to it's value in `filterValues` */
       name: PropTypes.string.isRequired,
-      /** Friendly label for filter field */
       displayName: PropTypes.string.isRequired,
-      /** One of the supported filter field input types */
       inputType: PropTypes.oneOf(['Text', 'MultiSelect', 'DateRange', 'None']).isRequired,
       isSortable: PropTypes.bool.isRequired,
-      /** Size of filter field in a 12-grid system */
       gridCol: PropTypes.oneOf([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]).isRequired,
-      /** Options for a "MultiSelect" inputType */
       option: PropTypes.arrayOf(
         PropTypes.shape({
           value: PropTypes.string,
