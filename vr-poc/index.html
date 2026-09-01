@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VR 体渲染 PoC — 3D 器官</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; font-family: system-ui, sans-serif; }
+    #ui {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      z-index: 20; display: flex; gap: 12px; align-items: center;
+    }
+    button {
+      padding: 12px 22px; font-size: 16px; border-radius: 8px; cursor: pointer;
+      border: 1px solid #475569; background: #1e293b; color: #fff;
+    }
+    button:hover { background: #334155; }
+    button:disabled { opacity: .35; cursor: not-allowed; }
+    #status { color: #cbd5e1; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <button id="enter-vr" disabled>进入 VR</button>
+    <button id="exit-vr" disabled>退出 VR</button>
+    <span id="status">加载中…</span>
+  </div>
+  <script type="module" src="dist/main.js?v=3"></script>
+</body>
+</html>

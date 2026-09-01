@@ -29,6 +29,7 @@ from monailabel.endpoints import (
     info,
     login,
     logs,
+    mas,
     model,
     model_registry,
     nninter_session,
@@ -124,6 +125,7 @@ app.include_router(model_registry.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(nninter_session.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(nninter_session.model_router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(vlm.router, prefix=settings.MONAI_LABEL_API_STR)
+app.include_router(mas.router, prefix=settings.MONAI_LABEL_API_STR)
 
 
 @app.get("/", include_in_schema=False)

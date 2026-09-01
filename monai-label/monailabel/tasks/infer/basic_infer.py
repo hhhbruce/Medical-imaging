@@ -24,7 +24,6 @@ from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from glob import glob as glob
 import SimpleITK as sitk
 import numpy as np
 import nibabel as nib
@@ -808,9 +807,8 @@ def _vlm_prepare_medical_slices(
         data["instruction"]
         if data.get("instruction")
         else (
-            "You are an instructor teaching medical students. You are "
-            "analyzing the following CT slices. Please review the slices provided below "
-            "carefully."
+            "你是一名指导医学生的教师，正在分析下列 CT 影像。"
+            "请仔细查看下方提供的影像并作答。请全程使用简体中文作答。"
         )
     )
     return query, instruction, slice_indices, normalized_img_list
@@ -1476,7 +1474,7 @@ def _mas_run(
             "MAS requires the openai package: pip install openai",
         ) from err
 
-    from monailabel.tasks.infer.mas_inference import MASWorkflowError, run_workflow
+    from monailabel.tasks.infer.mas_inference import MASWorkflowError, run_orchestrated_workflow
 
     strategy = str(data.get("mas_strategy") or "single").strip().lower()
     try:
@@ -1496,13 +1494,18 @@ def _mas_run(
         rounds,
     )
     try:
-        return run_workflow(
+        return run_orchestrated_workflow(
             client=client,
             model=model,
             strategy=strategy,
-            question=query,
+            # The engine only forwards ``question`` as text (image parts of
+            # ``initial_content`` are extracted separately), so the user's
+            # typed instruction must ride on the question — otherwise it is
+            # silently dropped and no agent ever sees it.
+            question=_custom_text_content(instruction, query),
             initial_content=user_content,
             rounds=rounds,
+            run_id=(str(data.get("mas_run_id") or "").strip() or None),
         )
     except MASWorkflowError as err:
         raise MONAILabelException(MONAILabelError.INVALID_INPUT, str(err)) from err
@@ -1932,21 +1935,23 @@ class BasicInferTask(InferTask):
                     "Custom VLM request requires a non-empty 'texts' query."
                 )
             _custom_instruction = str(data.get("instruction") or "").strip() or (
-                "You are an instructor teaching medical students. You are analyzing "
-                "the following CT slices. Please review the slices provided below "
-                "carefully."
+                "你是一名指导医学生的教师，正在分析相关医学影像。"
+                "请仔细查看所提供的影像并作答。请全程使用简体中文作答。"
             )
             final_result_json["server_begin_ts"] = server_begin_ts
             final_result_json["vlm_result"] = True
             if nnInter == "mas":
-                response_text, token_stats, mas_metadata = _mas_run(
+                response_text, token_stats, mas_metadata, mas_spec, mas_trace = _mas_run(
                     data, _custom_instruction, _custom_query, [], []
                 )
                 final_result_json["mas_result"] = True
                 final_result_json["mas_strategy"] = mas_metadata["strategy"]
+                final_result_json["mas_strategy_label"] = mas_metadata["strategy_label"]
                 final_result_json["mas_agent_count"] = mas_metadata["agent_count"]
                 final_result_json["mas_rounds"] = mas_metadata["rounds"]
                 final_result_json["mas_token_stats"] = token_stats
+                final_result_json["mas_spec"] = mas_spec
+                final_result_json["mas_trace"] = mas_trace
             else:
                 response_text = _custom_run(
                     data, _custom_instruction, _custom_query, [], []
@@ -1997,9 +2002,15 @@ class BasicInferTask(InferTask):
             reader = sitk.ImageSeriesReader()
             dicom_filenames = reader.GetGDCMSeriesFileNames(dicom_dir)
             _scan_elapsed = time.time() - _t_scan
+            if not dicom_filenames:
+                raise ValueError(f"No DICOM slices found in {dicom_dir!r}")
             _t_hdr = time.time()
             dcm_img_sample   = dcmread(dicom_filenames[0], stop_before_pixels=True)
-            dcm_img_sample_2 = dcmread(dicom_filenames[1], stop_before_pixels=True)
+            dcm_img_sample_2 = (
+                dcmread(dicom_filenames[1], stop_before_pixels=True)
+                if len(dicom_filenames) > 1
+                else None
+            )
             logger.info(
                 f"[timing] dicom_scan={_scan_elapsed:.3f}s  header_read={time.time()-_t_hdr:.3f}s  "
                 f"files={len(dicom_filenames)}"
@@ -2015,7 +2026,11 @@ class BasicInferTask(InferTask):
             logger.info(f"Series Instance UID: {seriesInstanceUID}")
 
             instanceNumber  = dcm_img_sample[0x00200013].value  if 0x00200013 in dcm_img_sample  else None
-            instanceNumber2 = dcm_img_sample_2[0x00200013].value if 0x00200013 in dcm_img_sample_2 else None
+            instanceNumber2 = (
+                dcm_img_sample_2[0x00200013].value
+                if dcm_img_sample_2 is not None and 0x00200013 in dcm_img_sample_2
+                else None
+            )
             logger.info(f"Prompt First InstanceNumber: {instanceNumber}")
             logger.info(f"Prompt Second InstanceNumber: {instanceNumber2}")
 
@@ -2262,14 +2277,17 @@ class BasicInferTask(InferTask):
                         return response_text, final_result_json
 
                     if nnInter == "mas":
-                        response_text, token_stats, mas_metadata = _mas_run(
+                        response_text, token_stats, mas_metadata, mas_spec, mas_trace = _mas_run(
                             data, instruction, query, slice_indices, normalized_img_list
                         )
                         final_result_json["mas_result"] = True
                         final_result_json["mas_strategy"] = mas_metadata["strategy"]
+                        final_result_json["mas_strategy_label"] = mas_metadata["strategy_label"]
                         final_result_json["mas_agent_count"] = mas_metadata["agent_count"]
                         final_result_json["mas_rounds"] = mas_metadata["rounds"]
                         final_result_json["mas_token_stats"] = token_stats
+                        final_result_json["mas_spec"] = mas_spec
+                        final_result_json["mas_trace"] = mas_trace
                         logger.info(
                             "MAS generated text length=%s chars, calls=%s",
                             len(response_text),
@@ -2983,6 +3001,8 @@ class BasicInferTask(InferTask):
             # for the duration of this request; ascontiguousarray detaches the crop
             # before the lock is released.
             pred = session.target_buffer.numpy()  # shape (Z, Y, X), dtype uint8, VIEW
+            pred_voxel_count = int(np.count_nonzero(pred))
+            final_result_json["pred_voxel_count"] = pred_voxel_count
 
             # Crop to tight non-zero bbox before sending.
             # Reduces wire bytes and compression time proportionally to segmentation size.
@@ -3070,6 +3090,10 @@ class BasicInferTask(InferTask):
         #SAM2
         if nnInter == False:
             medsam2 = data['medsam2']
+            if medsam2 not in ('sam2', 'medsam2'):
+                raise ValueError(f"Unsupported SAM2 model selector: {medsam2!r}")
+            if any(text not in ('', None, {}) for text in data.get('texts') or []):
+                raise ValueError('SAM2 and MedSAM2 accept point and box prompts, not text prompts')
             if medsam2 == 'medsam2':
                 predictor = _get_predictor_med()
             else:
@@ -3084,14 +3108,80 @@ class BasicInferTask(InferTask):
             len_y = img.GetSize()[1]
             len_x = img.GetSize()[0]
             logger.info(f"len Z Y X: {len_z}, {len_y}, {len_x}")
+
+            def validate_prompt_point(point, prompt_name):
+                if not isinstance(point, (list, tuple, np.ndarray)) or len(point) < 3:
+                    raise ValueError(f"{prompt_name} must contain at least three coordinates")
+                coords = [float(point[axis]) for axis in range(3)]
+                if not all(np.isfinite(coord) for coord in coords):
+                    raise ValueError(f"{prompt_name} contains a non-finite coordinate")
+                x, y, z = coords
+                if not (0 <= x < len_x and 0 <= y < len_y and 0 <= z < len_z):
+                    raise ValueError(
+                        f"{prompt_name} coordinate {(x, y, z)} is outside image bounds "
+                        f"x=[0,{len_x}), y=[0,{len_y}), z=[0,{len_z})"
+                    )
+
+            for point in data.get('pos_points') or []:
+                validate_prompt_point(point, 'pos_points')
+            for point in data.get('neg_points') or []:
+                validate_prompt_point(point, 'neg_points')
+            for box in data.get('pos_boxes') or []:
+                if not isinstance(box, (list, tuple, np.ndarray)) or len(box) < 2:
+                    raise ValueError('pos_boxes entries must contain two corner points')
+                if not (
+                    int(round(float(box[0][2]))) == int(round(float(box[1][2])))
+                ):
+                    raise ValueError(
+                        "Each SAM2 box must lie on one image slice (both corners need the same z)"
+                    )
+                validate_prompt_point(box[0], 'pos_boxes')
+                validate_prompt_point(box[1], 'pos_boxes')
             
-            file_name = data['image'].split('/')[-1]
-            frame_names = []
-            for i in range(len_z):
-                frame_names.append(f"{file_name}_{i}")
-            dicom_dir = data['image'].split('.nii.gz')[0]
-            image_files = glob('{}/*'.format(dicom_dir))
-            dcm_img_sample = dcmread(image_files[0], stop_before_pixels=True)
+            # The viewer orders its stack by image/SOP instance order, while GDCM may order
+            # the same series in the opposite direction (or use a non-trivial order).  When
+            # the viewer sends the SOP UIDs, build an explicit viewer-index -> model-frame
+            # mapping instead of guessing from the first two InstanceNumber values.
+            slice_sop_instance_uids = data.get('slice_sop_instance_uids') or []
+            display_to_backend_indices = None
+            if (
+                len(slice_sop_instance_uids) == len(dicom_filenames)
+                and all(isinstance(uid, str) for uid in slice_sop_instance_uids)
+                and len(set(slice_sop_instance_uids)) == len(slice_sop_instance_uids)
+            ):
+                backend_sop_instance_uids = []
+                for filename in dicom_filenames:
+                    header = dcmread(filename, stop_before_pixels=True)
+                    uid_element = header.get('SOPInstanceUID')
+                    uid = str(
+                        uid_element.value if hasattr(uid_element, 'value') else uid_element or ''
+                    ).strip()
+                    backend_sop_instance_uids.append(uid)
+                backend_index_by_uid = {
+                    uid: index
+                    for index, uid in enumerate(backend_sop_instance_uids)
+                    if uid
+                }
+                if (
+                    len(backend_index_by_uid) == len(backend_sop_instance_uids)
+                    and all(uid in backend_index_by_uid for uid in slice_sop_instance_uids)
+                ):
+                    display_to_backend_indices = [
+                        backend_index_by_uid[uid] for uid in slice_sop_instance_uids
+                    ]
+                    logger.info(
+                        "Using explicit viewer-to-GDCM slice mapping from SOPInstanceUIDs"
+                    )
+                else:
+                    logger.warning(
+                        "Ignoring incomplete slice_sop_instance_uids; falling back to reversal heuristic"
+                    )
+
+            slice_reversed = (
+                instanceNumber is not None
+                and instanceNumber2 is not None
+                and int(instanceNumber) > int(instanceNumber2)
+            )
 
             if contrast_window != None and contrast_center !=None:
                 # Check for cats and remote controls
@@ -3163,84 +3253,130 @@ class BasicInferTask(InferTask):
             ann_obj_id = 1
             video_segments = {}  # video_segments contains the per-frame segmentation results
             
-            ann_frame_list = np.array(list(map(lambda x: x[2], result_json['pos_points'])), dtype=np.int16)
-            ann_frame_list_neg = np.array(list(map(lambda x: x[2], result_json['neg_points'])), dtype=np.int16)
+            ann_frame_list = np.array(
+                [int(round(point[2])) for point in result_json['pos_points']], dtype=np.int64
+            )
+            ann_frame_list_neg = np.array(
+                [int(round(point[2])) for point in result_json['neg_points']], dtype=np.int64
+            )
             ann_frame_list = np.unique(np.concatenate((ann_frame_list, ann_frame_list_neg)))
 
             if "pos_boxes" not in result_json:
-                result_json["pos_boxes"] = []            
-            if len(result_json["pos_boxes"])!=0:
-                ann_frame_list_box = np.array(list(map(lambda x: x[2], [x for xs in result_json["pos_boxes"] for x in xs])), dtype=np.int16)
+                result_json["pos_boxes"] = []
+            if len(result_json["pos_boxes"]) != 0:
+                ann_frame_list_box = np.array(
+                    [int(round(point[2])) for box in result_json["pos_boxes"] for point in box],
+                    dtype=np.int64,
+                )
                 ann_frame_list = np.unique(np.concatenate((ann_frame_list, ann_frame_list_box)))
 
-            for i in range(len(ann_frame_list)):
+            if ann_frame_list.size == 0:
+                raise ValueError("SAM2 requires at least one valid point or box prompt")
 
-                if instanceNumber < instanceNumber2:
-                    ann_frame_idx = ann_frame_list[i]
+            def backend_frame_index(display_frame_index):
+                display_frame_index = int(display_frame_index)
+                if not 0 <= display_frame_index < len_z:
+                    raise ValueError(
+                        f"Prompt slice index {display_frame_index} is outside the image volume [0, {len_z})"
+                    )
+                if display_to_backend_indices is not None:
+                    return display_to_backend_indices[display_frame_index]
+                return len_z - 1 - display_frame_index if slice_reversed else display_frame_index
+
+            # Add every annotated slice.  This loop must contain prompt extraction and
+            # predictor invocation; keeping those statements outside it applies only the
+            # final annotated slice and silently drops all earlier prompts.
+            for display_frame_index in ann_frame_list:
+                value = int(display_frame_index)
+                ann_frame_idx = backend_frame_index(value)
+                logger.info(
+                    f"z axis slice: viewer_index={value}, backend_frame_index={ann_frame_idx}"
+                )
+                pos_points = [
+                    point[0:2]
+                    for point in result_json['pos_points']
+                    if int(round(point[2])) == value
+                ]
+                neg_points = [
+                    point[0:2]
+                    for point in result_json['neg_points']
+                    if int(round(point[2])) == value
+                ]
+                boxes_for_frame = [
+                    box
+                    for box in result_json["pos_boxes"]
+                    if len(box) >= 2 and int(round(box[0][2])) == value
+                ]
+
+                if pos_points and neg_points:
+                    points = np.asarray(pos_points + neg_points, dtype=np.float32)
+                    labels = np.asarray(
+                        [1] * len(pos_points) + [0] * len(neg_points), dtype=np.int32
+                    )
+                elif pos_points:
+                    points = np.asarray(pos_points, dtype=np.float32)
+                    labels = np.ones(len(pos_points), dtype=np.int32)
+                elif neg_points:
+                    points = np.asarray(neg_points, dtype=np.float32)
+                    labels = np.zeros(len(neg_points), dtype=np.int32)
                 else:
-                    ann_frame_idx = len_z-1-ann_frame_list[i]
-            
-            #ann_frame_idx = len_z-1-data['pos_points'][0][2]  # the frame index we interact with 
-                  # give a unique id to each object we interact with (it can be any integers)
-            
-            # Let's add a positive click at (x, y) = (210, 350) to get started
-            #pos_points = np.array(list(map(lambda x: x[0:2], data['pos_points'])), dtype=np.float32)
-                #breakpoint()
-                value = ann_frame_list[i]
-                logger.info(f"z axis slice: value: {value}")
-                pos_points = np.array([i[0:2] for i in result_json['pos_points'] if i[2]==value], dtype=np.int16)
-                neg_points = np.array([i[0:2] for i in result_json['neg_points'] if i[2]==value], dtype=np.int16)
-                pre_boxes = np.array([i for i in result_json["pos_boxes"] if i[0][2]==value], dtype=np.int16)
+                    # A box-only prompt must use None rather than a rank-1 empty array;
+                    # the predictor concatenates box points with a rank-3 batched tensor.
+                    points = None
+                    labels = None
 
-                if len(neg_points) >0 and len(pos_points) >0:
-                    points = np.concatenate((pos_points, neg_points), axis=0)
-                    # for labels, `1` means positive click and `0` means negative click        
-                    labels = np.array([1]*len(pos_points) + [0]*len(neg_points), np.int32)
-                elif len(pos_points) >0:
-                    points = pos_points
-                    labels = np.array([1]*len(points), np.int32)
-                elif len(neg_points) >0:
-                    points = neg_points
-                    labels = np.array([0]*len(points), np.int32)
-                else:
-                    points = np.array([], dtype=np.int16)
-                    labels = np.array([], dtype=np.int32)
+                boxes = None
+                if boxes_for_frame:
+                    boxes = np.asarray(boxes_for_frame, dtype=np.float32)[:, :, :2].reshape(-1, 4)
 
-                if len(pre_boxes)!=0:
-                    boxes = pre_boxes[:,:,:-1].reshape(pre_boxes.shape[0],-1)
-                    logger.info(f"ann_frame_list: {ann_frame_list}")
-                    logger.info(f"ann_frame_idx: {ann_frame_idx}")
-                    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                        _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
+                if points is None and boxes is None:
+                    raise ValueError(
+                        f"No valid point or box prompt remains for viewer slice {value}"
+                    )
+
+                with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                    _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
                         inference_state=inference_state,
                         frame_idx=ann_frame_idx,
                         obj_id=ann_obj_id,
                         points=points,
                         labels=labels,
-                        box=boxes
-                        )
-                else:
-                    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                        _, out_obj_ids, out_mask_logits = predictor.add_new_points_or_box(
-                        inference_state=inference_state,
-                        frame_idx=ann_frame_idx,
-                        obj_id=ann_obj_id,
-                        points=points,
-                        labels=labels,
-                        )
+                        box=boxes,
+                    )
 
                 if "one" in data:
                     video_segments[ann_frame_idx] = {
-                        out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                        for i, out_obj_id in enumerate(out_obj_ids)
+                        out_obj_id: (out_mask_logits[obj_index] > 0.0).cpu().numpy()
+                        for obj_index, out_obj_id in enumerate(out_obj_ids)
                     }
+
             if "one" not in data:
+                # Segment both sides of the earliest prompt.  Starting only at frame 0
+                # propagates forward before the first prompt and leaves slices before the
+                # clicked slice without a meaningful conditioned mask.
+                first_backend_frame = backend_frame_index(ann_frame_list[0])
                 with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-                    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(inference_state, start_frame_idx=0, reverse=False):
+                    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                        inference_state,
+                        start_frame_idx=first_backend_frame,
+                        reverse=False,
+                    ):
                         video_segments[out_frame_idx] = {
-                            out_obj_id: (out_mask_logits[i] > 0.0).cpu().numpy()
-                            for i, out_obj_id in enumerate(out_obj_ids)
+                            out_obj_id: (out_mask_logits[obj_index] > 0.0).cpu().numpy()
+                            for obj_index, out_obj_id in enumerate(out_obj_ids)
                         }
+                    for out_frame_idx, out_obj_ids, out_mask_logits in predictor.propagate_in_video(
+                        inference_state,
+                        start_frame_idx=first_backend_frame,
+                        reverse=True,
+                    ):
+                        # Forward propagation is preferred for frames at/after the first
+                        # prompt; reverse propagation fills only the preceding frames.
+                        if out_frame_idx not in video_segments:
+                            video_segments[out_frame_idx] = {
+                                out_obj_id: (out_mask_logits[obj_index] > 0.0).cpu().numpy()
+                                for obj_index, out_obj_id in enumerate(out_obj_ids)
+                            }
 
             # Free SAM2 inference state buffers before building the output array
             predictor.reset_state(inference_state)
@@ -3248,10 +3384,18 @@ class BasicInferTask(InferTask):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-            pred = np.zeros((len_z, len_y, len_x))
+            pred = np.zeros((len_z, len_y, len_x), dtype=np.uint8)
 
-            for i in video_segments.keys():
-                pred[i]=video_segments[i][1][0].astype(int)
+            for frame_idx, frame_segments in video_segments.items():
+                mask = frame_segments.get(ann_obj_id)
+                if mask is not None:
+                    pred[int(frame_idx)] = np.asarray(mask[0], dtype=np.uint8)
+
+            # Return slices in the viewer's order when the explicit SOP mapping was
+            # verified. Without it, preserve the legacy reversal flag so older clients
+            # can still compensate for a simple reversed GDCM order.
+            if display_to_backend_indices is not None:
+                pred = pred[np.asarray(display_to_backend_indices, dtype=np.intp)]
             #pred_itk = sitk.GetImageFromArray(pred)
             #pred_itk.CopyInformation(img)
             #pred_itk = sitk.Cast(pred_itk, sitk.sitkUInt8)
@@ -3263,10 +3407,12 @@ class BasicInferTask(InferTask):
             final_result_json["prompt_info"] = result_json
             final_result_json["sam_elapsed"] = sam_elapsed
             
-            if instanceNumber > instanceNumber2:
-                final_result_json["flipped"] = True
-            else:
+            if display_to_backend_indices is not None:
                 final_result_json["flipped"] = False
+                final_result_json["slice_order_verified"] = True
+            else:
+                final_result_json["flipped"] = slice_reversed
+                final_result_json["slice_order_verified"] = False
 
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
             if medsam2 == 'medsam2':

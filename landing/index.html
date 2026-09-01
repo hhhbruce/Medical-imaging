@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#060b12">
+  <meta name="description" content="Nexus 医学影像智能诊断平台：AI 辅助分割、三维重建与影像报告生成。">
+  <title>NEXUS｜医学影像智能诊断平台</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body data-layout="wide">
+  <canvas id="gl" aria-hidden="true"></canvas>
+  <div id="grain" aria-hidden="true"></div><div id="vignette" aria-hidden="true"></div><div class="scanline" aria-hidden="true"></div>
+  <div class="cursor" id="cursor" aria-hidden="true"><i></i></div>
+
+  <div class="preloader" id="preloader"><div class="preloader__inner"><div class="brand-mark brand-mark--large" aria-hidden="true"><span></span><i></i><b></b></div><p class="preloader__label">NEXUS / 医学影像智能诊断平台</p><div class="preloader__bar"><i id="preloader-bar"></i></div><div class="preloader__meta"><span id="preloader-status">正在校准影像空间</span><b><span id="preloader-pct">0</span>%</b></div></div></div>
+
+  <header class="nav" id="nav">
+    <a class="brand" href="#top" data-cursor><span class="brand-mark" aria-hidden="true"><span></span><i></i><b></b></span><span class="brand__type"><strong>NEXUS</strong><em>医学影像智能诊断</em></span></a>
+    <nav class="nav-links" id="navlinks" aria-label="主导航"><a href="#platform" class="nav-link" data-cursor><span>平台能力</span><small>平台</small></a><a href="#workflows" class="nav-link" data-cursor><span>影像工作流</span><small>工作流</small></a><a href="#agents" class="nav-link" data-cursor><span>模型智能</span><small>智能</small></a><a href="#lab" class="nav-link" data-cursor><span>研究空间</span><small>研究</small></a></nav>
+    <a class="nav-cta" href="#contact" data-cursor>进入工作台 <span>↗</span></a><button class="nav-burger" id="menu-button" aria-label="打开菜单" aria-controls="navlinks" aria-expanded="false" data-cursor><i></i><i></i></button>
+  </header>
+
+  <main class="page" id="top">
+    <section class="hero section" id="hero" data-cam="0">
+      <div class="hero__top"><p class="eyebrow reveal reveal--fade"><span class="status-dot"></span>AI 辅助医疗诊断 / 00</p><h1 class="display reveal reveal--up"><span>看见更深。</span><span>判断更快。</span></h1><p class="hero__intro body-lg reveal reveal--up">面向临床团队的医学影像智能工作台：从三维影像、交互式分割，到辅助报告，一条路径完成从发现到决策。</p><div class="hero__actions reveal reveal--up"><a class="button button--solid" href="#platform" data-cursor>探索平台能力 <span>↗</span></a><a class="text-link" href="#workflows" data-cursor><span class="text-link__arrow">↓</span> 查看影像流程</a></div></div>
+      <div class="hero__visual-note reveal reveal--fade"><span>实时三维体数据</span><span class="note-line"></span><span>轴位 · 冠状 · 矢状</span></div><div class="hero__side reveal reveal--up"><span>诊断</span><span>01—04</span></div>
+      <div class="hero__organ-callout reveal reveal--fade"><span class="organ-callout__line"></span><div><b>器官结构识别</b><small>肝脏 · 肺部 · 肾脏</small></div></div>
+      <div class="hero__bottom"><div class="hero__signal reveal reveal--fade"><span>向下滚动进入影像空间</span><i class="signal-line"><b></b></i></div><div class="hero__metrics reveal reveal--up"><div><b>三维</b><span>体数据上下文</span></div><div><b>05</b><span>AI 模型家族</span></div><div><b>01</b><span>统一诊断工作台</span></div><div class="hero__metrics-status"><i></i><span>系统在线<br>本地优先</span></div></div></div>
+      <div class="hero__readout" aria-hidden="true"><span>扫描区域</span><b>+</b><span>肝脏</span><span>ROI 识别中</span></div>
+    </section>
+
+    <section class="section section--story" id="platform" data-cam="1"><div class="section-head reveal reveal--fade"><span><b>01</b> / 平台能力</span><i></i><small>让影像成为可解释的证据</small></div><div class="story-grid"><h2 class="display reveal reveal--up">一张影像，<br><em>从这里开始。</em></h2><div class="story-copy"><p class="lead reveal reveal--up">Nexus 将影像、提示、模型和临床叙事放在同一张连续的工作台上。</p><p class="body reveal reveal--up">当解剖结构需要边界，用点、涂鸦、框选或套索发出视觉提示；当异常需要命名，用自然语言描述你的问题。所有结果都保留在上下文中，让医生始终掌握判断过程。</p><a class="arrow-link reveal reveal--fade" href="#workflows" data-cursor>进入影像流程 <span>↗</span></a></div></div><div class="story-stats reveal reveal--up"><div><b>看得见</b><span>点选 · 涂鸦 · 框选 · 套索</span></div><div><b>可迭代</b><span>在原始上下文中修正边界</span></div><div><b>可追溯</b><span>分割结果连接辅助报告</span></div><div><b>本地优先</b><span>数据留在你的基础设施内</span></div></div></section>
+
+    <section class="section section--workflows" id="workflows" data-cam="2"><div class="section-head reveal reveal--fade"><span><b>02</b> / 影像工作流</span><i></i><small>同一体数据的三种入口</small></div><div class="workflow-intro"><h2 class="display reveal reveal--up">一个体积，<br><em>多种看法。</em></h2><p class="body-lg reveal reveal--up">每一次诊断都从同一份临床影像开始，再沿着你真正想回答的问题展开。</p></div><div class="cards">
+      <article class="card card--tall reveal reveal--up" data-focus="0" data-cursor><div class="card__visual"><canvas class="card__canvas" data-card="slice"></canvas><div class="card__hud"><span>01 / 03</span><i></i><span>轴位浏览</span></div><div class="card__crosshair"></div></div><div class="card__label"><div><b>逐层查看</b><small>横断面影像</small></div><span>01</span></div><p>沿熟悉的影像层面浏览，让注意力回到解剖结构本身。</p></article>
+      <article class="card card--offset reveal reveal--up" data-focus="1" data-cursor><div class="card__visual"><canvas class="card__canvas" data-card="segment"></canvas><div class="card__hud"><span>02 / 03</span><i></i><span>AI 分割</span></div><div class="card__scan-pill">提示状态 <b>就绪</b></div></div><div class="card__label"><div><b>提示器官</b><small>交互式结构分割</small></div><span>02</span></div><p>点一下、画一笔，或直接描述你想看的器官和病灶。</p></article>
+      <article class="card card--lower reveal reveal--up" data-focus="2" data-cursor><div class="card__visual"><canvas class="card__canvas" data-card="report"></canvas><div class="card__hud"><span>03 / 03</span><i></i><span>辅助报告</span></div><div class="card__report-lines"><i></i><i></i><i></i><i></i></div></div><div class="card__label"><div><b>解释发现</b><small>多模态报告生成</small></div><span>03</span></div><p>把有意义的影像证据带入清晰、可复核的临床叙事。</p></article>
+    </div></section>
+
+    <section class="section section--agents" id="agents" data-cam="3"><div class="section-head reveal reveal--fade"><span><b>03</b> / 模型智能</span><i></i><small>模型是工具，医生是决策者</small></div><div class="agents-head"><h2 class="display reveal reveal--up">为每一个问题，<br><em>选择合适的模型。</em></h2><p class="body-lg reveal reveal--up">多模型协作层保持清晰可见。选择工具、查看结果、继续修正，最终判断始终留在临床团队手中。</p></div><div class="agent-list"><div class="agent-row reveal reveal--up" data-cursor><span class="agent-index">01</span><div><h3>交互式分割 <em>nnInteractive</em></h3><p>用视觉提示快速修正器官边界，支持连续迭代。</p></div><span class="agent-tag">视觉</span><span class="agent-arrow">↗</span></div><div class="agent-row reveal reveal--up" data-cursor><span class="agent-index">02</span><div><h3>开放词汇解剖 <em>SAM2 / MedSAM2</em></h3><p>用点、框、涂鸦或文字提示探索目标结构。</p></div><span class="agent-tag">提示</span><span class="agent-arrow">↗</span></div><div class="agent-row reveal reveal--up" data-cursor><span class="agent-index">03</span><div><h3>三维体数据传播 <em>VoxTell / SAM3</em></h3><p>从一个最小提示开始，将信号扩展到整个体数据。</p></div><span class="agent-tag">三维</span><span class="agent-arrow">↗</span></div><div class="agent-row reveal reveal--up" data-cursor><span class="agent-index">04</span><div><h3>多模态辅助报告 <em>MedGemma / VLM</em></h3><p>把已标注的影像证据转成可供医生复核的报告草稿。</p></div><span class="agent-tag">语言</span><span class="agent-arrow">↗</span></div></div></section>
+
+    <section class="section section--lab" id="lab" data-cam="4"><div class="section-head reveal reveal--fade"><span><b>04</b> / 研究空间</span><i></i><small>让研究离临床更近</small></div><div class="lab-grid"><div><h2 class="display reveal reveal--up">为下一次<br><em>阅片而生。</em></h2><p class="body-lg reveal reveal--up">每一层都保持开放：测试模型、比较提示、观察置信度，把从实验到临床的路径缩短一些。</p><a class="button button--outline reveal reveal--fade" href="#contact" data-cursor>打开研究空间 <span>↗</span></a></div><div class="lab-console reveal reveal--fade"><div class="console-top"><span><i></i> NEXUS / 实时遥测</span><span>运行中</span></div><div class="console-wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="console-data"><span><b>当前模型</b> SAM2 / 2.1</span><span><b>响应时间</b> 184 ms</span><span><b>置信度</b> 98.7%</span></div><div class="console-foot"><span>边界一致性</span><b>▰▰▰▰▰▰▰▰▰▱</b></div></div></div></section>
+
+    <section class="section section--closing" id="contact" data-cam="5"><div class="closing-orbit" aria-hidden="true"><span></span><i></i><b></b></div><p class="eyebrow reveal reveal--fade"><span class="status-dot"></span> 第 05 章 / 影像之后</p><h2 class="display reveal reveal--up">让下一次<br><em>判断有据可循。</em></h2><p class="body-lg reveal reveal--up">为重要的临床时刻，设计更有秩序的影像体验。</p><a class="button button--solid reveal reveal--fade" href="#top" data-cursor>回到首页 <span>↗</span></a></section>
+    <footer class="footer"><div class="footer-grid"><div class="footer-brand"><span class="brand-mark" aria-hidden="true"><span></span><i></i><b></b></span><p>面向临床团队的医学影像智能诊断工作台。</p></div><div><h4>平台</h4><a href="#platform">平台能力</a><a href="#workflows">影像工作流</a><a href="#agents">模型智能</a></div><div><h4>探索</h4><a href="#lab">研究空间</a><a href="#contact">进入工作台</a><a href="#top">关于平台</a></div><div><h4>技术栈</h4><span>OHIF / MONAI</span><span>THREE.JS / WEBGL</span><span>本地优先</span></div></div><div class="footer-base"><span>© 2026 NEXUS 医学影像</span><span>看见更多，决策更快</span><span>为临床团队而设计</span></div></footer>
+  </main>
+  <div class="rail" id="rail" aria-label="页面章节"></div><div class="telemetry"><span id="telemetry-coord">系统 37.775 / -122.419</span><span id="telemetry-frame">帧 00000</span></div>
+  <script src="vendor/three.min.js"></script><script src="app.js"></script>
+</body></html>

@@ -1,0 +1,37 @@
+yarn run v1.22.22
+$ cd platform/app && yarn run dev:fast
+$ rsbuild dev --config ../../rsbuild.config.ts
+  Rsbuild v1.1.13
+
+Browserslist: caniuse-lite is outdated. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+  ➜ Network:  http://10.98.48.223:3000/
+  ➜ Local:    http://localhost:3000/
+  ➜ Network:  http://172.23.208.1:3000/
+  ➜ press h + enter to show shortcuts
+
+Browserslist: caniuse-lite is outdated. Please run:
+  npx update-browserslist-db@latest
+  Why you should do it regularly: https://github.com/browserslist/update-db#readme
+start   Building...
+ready   Built in 9.20 s (web)
+warn    Compile Warning: 
+File: D:\Smart City\Medical-imaging\Viewers\node_modules\swiper\modules\navigation.css:1:1
+  ⚠ ModuleWarning: Warning
+  │ 
+  │ (22:3) Nested CSS was detected, but CSS nesting has not been configured correctly.
+  │ Please enable a CSS nesting plugin *before* Tailwind in your configuration.
+  │ See how here: https://tailwindcss.com/docs/using-with-preprocessors#nesting (from: D:\Smart City\Medical-imaging\Viewers\node_modules\postcss-loader\dist\cjs.js??ruleSet[1].rules[10].use[0])
+
+File: D:\Smart City\Medical-imaging\Viewers\node_modules\swiper\swiper.css:1:1
+  ⚠ ModuleWarning: Warning
+  │ 
+  │ (95:3) Nested CSS was detected, but CSS nesting has not been configured correctly.
+  │ Please enable a CSS nesting plugin *before* Tailwind in your configuration.
+  │ See how here: https://tailwindcss.com/docs/using-with-preprocessors#nesting (from: D:\Smart City\Medical-imaging\Viewers\node_modules\postcss-loader\dist\cjs.js??ruleSet[1].rules[10].use[0])
+
+start   Building...
+ready   Built in 4.38 s (web)
+start   Building...
+ready   Built in 0.75 s (web)

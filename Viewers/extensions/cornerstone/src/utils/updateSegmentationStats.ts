@@ -1,5 +1,102 @@
 import * as cornerstoneTools from '@cornerstonejs/tools';
 
+// A segmentation may use one stack labelmap per segment. Cornerstone's public
+// statistics helpers still read the legacy Labelmap.imageIds field, which points
+// to the primary layer only. Serialize temporary layer selection so stats and
+// bidirectional measurements operate on the segment's bound layer without
+// allowing concurrent workers to observe a half-switched state.
+const _segmentationLayerQueues = new Map<string, Promise<unknown>>();
+
+function getSegmentLayerInfo(segmentationId: string, segmentIndex: number) {
+  const segmentation = cornerstoneTools.segmentation.state.getSegmentation(segmentationId);
+  const labelmap = segmentation?.representationData?.Labelmap as any;
+  if (!segmentation || !labelmap) {
+    return null;
+  }
+
+  const binding = labelmap.segmentBindings?.[segmentIndex];
+  const layer = binding ? labelmap.labelmaps?.[binding.labelmapId] : null;
+  const imageIds = layer?.imageIds;
+  if (!Array.isArray(imageIds) || imageIds.length === 0) {
+    return null;
+  }
+
+  return {
+    labelmap,
+    imageIds,
+    labelValue: Number(binding?.labelValue ?? segmentIndex),
+  };
+}
+
+async function withSegmentLayer<T>(
+  segmentationId: string,
+  segmentIndex: number,
+  callback: () => Promise<T>
+): Promise<T> {
+  const previous = _segmentationLayerQueues.get(segmentationId) ?? Promise.resolve();
+  const current = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const layerInfo = getSegmentLayerInfo(segmentationId, segmentIndex);
+      if (!layerInfo) {
+        return callback();
+      }
+
+      const { labelmap, imageIds } = layerInfo;
+      const previousImageIds = labelmap.imageIds;
+      const previousVolumeId = labelmap.volumeId;
+      // Force the worker helper down its stack path for this bound layer. The
+      // legacy volume, when present, belongs to the primary layer.
+      labelmap.imageIds = imageIds;
+      delete labelmap.volumeId;
+      try {
+        return await callback();
+      } finally {
+        labelmap.imageIds = previousImageIds;
+        if (previousVolumeId !== undefined) {
+          labelmap.volumeId = previousVolumeId;
+        }
+      }
+    });
+  _segmentationLayerQueues.set(segmentationId, current);
+  try {
+    return await current;
+  } finally {
+    if (_segmentationLayerQueues.get(segmentationId) === current) {
+      _segmentationLayerQueues.delete(segmentationId);
+    }
+  }
+}
+
+async function getStatisticsForSegment(segmentationId: string, segmentIndex: number) {
+  const layerInfo = getSegmentLayerInfo(segmentationId, segmentIndex);
+  const labelValue = layerInfo?.labelValue ?? segmentIndex;
+  return withSegmentLayer(segmentationId, segmentIndex, () =>
+    cornerstoneTools.utilities.segmentation.getStatistics({
+      segmentationId,
+      segmentIndices: [labelValue],
+      mode: 'individual',
+    })
+  );
+}
+
+export async function getSegmentLargestBidirectionalForSegment({
+  segmentationId,
+  segmentIndex,
+}: {
+  segmentationId: string;
+  segmentIndex: number;
+}) {
+  const layerInfo = getSegmentLayerInfo(segmentationId, segmentIndex);
+  const labelValue = layerInfo?.labelValue ?? segmentIndex;
+  return withSegmentLayer(segmentationId, segmentIndex, () =>
+    cornerstoneTools.utilities.segmentation.getSegmentLargestBidirectional({
+      segmentationId,
+      segmentIndices: [labelValue],
+    })
+  );
+}
+
 interface BidirectionalAxis {
   length: number;
   // Add other axis properties as needed
@@ -64,9 +161,7 @@ function setSegmentsStatsPending(
   if (!changed) {
     return;
   }
-  cornerstoneTools.segmentation.updateSegmentations([
-    { segmentationId, payload: { segments } },
-  ]);
+  cornerstoneTools.segmentation.updateSegmentations([{ segmentationId, payload: { segments } }]);
 }
 
 /**
@@ -98,11 +193,12 @@ export async function updateSegmentationStats({
 
   // When targetSegmentIndex is provided, compute stats only for that segment.
   // Other segments keep their existing cachedStats — correct for non-overlapping multi-segment.
-  const segmentIndices = targetSegmentIndex !== undefined
-    ? [targetSegmentIndex]
-    : Object.keys(currentSegmentation.segments)
-        .map(index => parseInt(index))
-        .filter(index => index > 0); // Filter out segment 0 which is typically background
+  const segmentIndices =
+    targetSegmentIndex !== undefined
+      ? [targetSegmentIndex]
+      : Object.keys(currentSegmentation.segments)
+          .map(index => parseInt(index))
+          .filter(index => index > 0); // Filter out segment 0 which is typically background
 
   if (segmentIndices.length === 0) {
     console.debug('No segments found in segmentation:', segmentationId);
@@ -118,13 +214,20 @@ export async function updateSegmentationStats({
     setSegmentsStatsPending(segmentationId, segmentIndices, true);
   }
   try {
-    const stats = await cornerstoneTools.utilities.segmentation.getStatistics({
-      segmentationId,
-      segmentIndices,
-      mode: 'individual',
-    });
+    const stats: Record<string, any> = {};
+    // Each segment can be bound to a different labelmap layer. Compute them one
+    // at a time so the worker receives the imageIds for that segment's layer.
+    for (const segmentIndex of segmentIndices) {
+      const segmentStats = await getStatisticsForSegment(segmentationId, segmentIndex);
+      const labelValue =
+        getSegmentLayerInfo(segmentationId, segmentIndex)?.labelValue ?? segmentIndex;
+      const stat = segmentStats?.[labelValue] ?? segmentStats?.[segmentIndex];
+      if (stat) {
+        stats[segmentIndex] = stat;
+      }
+    }
 
-    if (!stats) {
+    if (Object.keys(stats).length === 0) {
       return null;
     }
 

@@ -110,6 +110,28 @@ def send_response(datastore, result, output, background_tasks):
     res_img = result.get("file")
     res_json = result.get("params")
 
+    # MAS (multi-agent) result: return the answer plus the orchestration trace as
+    # JSON so the viewer can replay the agent data-flow visualization.
+    if (
+        type(res_img) == str
+        and isinstance(res_json, dict)
+        and res_json.get("mas_result") is True
+    ):
+        payload = {
+            "answer": res_img,
+            "strategy": res_json.get("mas_strategy"),
+            "strategy_label": res_json.get("mas_strategy_label"),
+            "agent_count": res_json.get("mas_agent_count"),
+            "rounds": res_json.get("mas_rounds"),
+            "token_stats": res_json.get("mas_token_stats"),
+            "spec": res_json.get("mas_spec"),
+            "trace": res_json.get("mas_trace"),
+        }
+        return Response(
+            content=json.dumps(payload, ensure_ascii=False),
+            media_type="application/json",
+        )
+
     # VLM text result: basic_infer returns the assistant's text as the "file" value.
     if (
         type(res_img) == str
@@ -148,6 +170,7 @@ def send_response(datastore, result, output, background_tasks):
                 fields = {
                     "prompt_info": json.dumps(res_json.get("prompt_info")),
                     "flipped": json.dumps(res_json.get("flipped")),
+                    "slice_order_verified": json.dumps(res_json.get("slice_order_verified")),
                     "nninter_elapsed": json.dumps(res_json.get("nninter_elapsed")),
                     "sam_elapsed": json.dumps(res_json.get("sam_elapsed")),
                     "label_name": res_json.get("label_name"),
@@ -163,6 +186,7 @@ def send_response(datastore, result, output, background_tasks):
                     "pred_offset": json.dumps(res_json.get("pred_offset")),
                     "pred_full_shape": json.dumps(res_json.get("pred_full_shape")),
                     "pred_crop_shape": json.dumps(res_json.get("pred_crop_shape")),
+                    "pred_voxel_count": json.dumps(res_json.get("pred_voxel_count")),
                 }
 
                 boundary = f"monai-{secrets.token_hex(12)}"
@@ -286,6 +310,7 @@ def run_inference(
         fields = {
             "prompt_info": json.dumps(res_json.get("prompt_info")),
             "flipped": json.dumps(res_json.get("flipped")),
+            "slice_order_verified": json.dumps(res_json.get("slice_order_verified")),
             "nninter_elapsed": json.dumps(res_json.get("nninter_elapsed")),
             "sam_elapsed": json.dumps(res_json.get("sam_elapsed")),
             "label_name": res_json.get("label_name"),
@@ -301,6 +326,7 @@ def run_inference(
             "pred_offset": json.dumps(res_json.get("pred_offset")),
             "pred_full_shape": json.dumps(res_json.get("pred_full_shape")),
             "pred_crop_shape": json.dumps(res_json.get("pred_crop_shape")),
+            "pred_voxel_count": json.dumps(res_json.get("pred_voxel_count")),
             "nninter_op": json.dumps(res_json.get("nninter_op")),
             "undone": json.dumps(res_json.get("undone")),
         }
@@ -378,8 +404,12 @@ def save_combined_segmentation(combined_pixel_array, all_segments, combined_fram
     combined_segmentation.PixelData = packed_pixel_data.tobytes()
     return combined_segmentation
 
+# NOTE: deliberately a sync (def) endpoint. Starlette runs sync handlers in its
+# threadpool, so a long-running MAS/VLM inference no longer blocks the event
+# loop — allowing the viewer to poll /mas/runs/{run_id} for live agent events
+# while this request is still in progress.
 @router.post("/{model}", summary=f"{RBAC_USER}Run Inference for supported model")
-async def api_run_inference(
+def api_run_inference(
     background_tasks: BackgroundTasks,
     model: str,
     image: str = "",

@@ -18,6 +18,7 @@ import OHIFViewportActionCorners from '../components/OHIFViewportActionCorners';
 import { getWindowLevelActionMenu } from '../components/WindowLevelActionMenu/getWindowLevelActionMenu';
 import { getViewportDataOverlaySettingsMenu } from '../components/ViewportDataOverlaySettingMenu';
 import { getSegmentationOnlyToggle } from '../components/ViewportDataOverlaySettingMenu/SegmentationOnlyToggle';
+import { getVRPreviewButton } from '../components/VRPreviewButton/VRPreviewButton';
 import { getViewportPresentations } from '../utils/presentations/getViewportPresentations';
 import { useSynchronizersStore } from '../stores/useSynchronizersStore';
 import ActiveViewportBehavior from '../utils/ActiveViewportBehavior';
@@ -392,6 +393,20 @@ const OHIFCornerstoneViewport = React.memo(
           }),
           location: segmentationOverlay.location,
           indexPriority: 2,
+        });
+      }
+
+      if (is3DVolumeViewport) {
+        viewportActionCornersService.addComponent({
+          viewportId,
+          id: 'vrPreviewButton',
+          component: getVRPreviewButton({
+            viewportId,
+            servicesManager,
+            commandsManager,
+          }),
+          location: viewportActionCornersService.LOCATIONS.topRight,
+          indexPriority: 3,
         });
       }
     }, [

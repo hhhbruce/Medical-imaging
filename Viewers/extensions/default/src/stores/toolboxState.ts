@@ -70,9 +70,88 @@ let vllmFamily: VllmFamilyId = '';
 let vllmThinkingLevel: VllmThinkingLevel = 'on';
 
 /** Multi-agent workflow used by the custom OpenAI-compatible endpoint. */
-export type CustomMasStrategy = 'single' | 'discussion' | 'clinical-panel' | 'triage-panel';
+export type CustomMasStrategy =
+  | 'single'
+  | 'discussion'
+  | 'clinical-panel'
+  | 'triage-panel'
+  | 'expert-panel'
+  // ---- MedMASLab 方法移植 ----
+  | 'debate'
+  | 'mdagents'
+  | 'mdteamgpt'
+  | 'reconcile'
+  | 'metaprompting'
+  | 'autogen'
+  | 'dylan'
+  | 'medagents'
+  | 'colacare'
+  | 'sc'
+  | 'cot';
 
 let customMasStrategy: CustomMasStrategy = 'single';
+
+/** A single orchestration node in the multi-agent data-flow graph. */
+export interface MasNode {
+  id: string;
+  name: string;
+  kind: string;
+}
+
+/** A directed edge in the multi-agent data-flow graph. */
+export interface MasEdge {
+  src: string;
+  dst: string;
+  port: string;
+  loop: boolean;
+}
+
+/** One observability record emitted by the orchestration engine. */
+export interface MasTraceEvent {
+  ts: number;
+  type: string;
+  node?: string | null;
+  src?: string | null;
+  dst?: string | null;
+  content: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  round: number;
+  meta?: Record<string, unknown>;
+}
+
+/** The full trace returned by the MAS endpoint (spec graph + event stream). */
+export interface MasTracePayload {
+  answer: string;
+  strategy: string;
+  strategy_label?: string;
+  agent_count: number;
+  rounds: number;
+  token_stats?: {
+    num_llm_calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+  };
+  spec: {
+    name: string;
+    entry: string;
+    exit: string;
+    max_rounds: number;
+    nodes: MasNode[];
+    edges: MasEdge[];
+  };
+  trace: {
+    name: string;
+    final_answer: string;
+    num_llm_calls: number;
+    prompt_tokens: number;
+    completion_tokens: number;
+    rounds: number;
+    events: MasTraceEvent[];
+  };
+}
+
+let masTrace: MasTracePayload | null = null;
 
 /** User-configured custom VLM endpoint (base_url + api_key + endpoint type). */
 let customBaseUrl = '';
@@ -251,6 +330,10 @@ export const toolboxState = {
   getCustomMasStrategy: (): CustomMasStrategy => customMasStrategy,
   setCustomMasStrategy: (strategy: CustomMasStrategy) => {
     customMasStrategy = strategy;
+  },
+  getMasTrace: (): MasTracePayload | null => masTrace,
+  setMasTrace: (trace: MasTracePayload | null) => {
+    masTrace = trace;
   },
   getCustomModel: () => customModel,
   setCustomModel: (model: string) => {

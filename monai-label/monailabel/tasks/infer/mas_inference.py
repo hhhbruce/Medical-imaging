@@ -9,9 +9,22 @@ imports in MedMASLab, so a remote OpenAI-compatible endpoint only needs the
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Sequence, Tuple
+from threading import Lock
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+import re
 import time
+
+from monailabel.tasks.infer.orchestration import Agent, RuntimeEngine
+from monailabel.tasks.infer.orchestration.spec import (
+    AggregatorStrategy,
+    EdgeSpec,
+    NodeKind,
+    NodeSpec,
+    OrchestrationSpec,
+)
+from monailabel.tasks.infer.orchestration.patterns import build_expert_panel
 
 
 @dataclass(frozen=True)
@@ -37,24 +50,24 @@ class WorkflowStats:
 
 DISCUSSION_PROFILES: Tuple[AgentProfile, ...] = (
     AgentProfile(
-        "Primary Care Physician",
-        "initial assessment and differential diagnosis",
-        "Clarify the clinical problem, timeline, red flags, differential diagnosis, and initial workup.",
+        "全科医生",
+        "初诊评估与鉴别诊断",
+        "梳理临床问题、病程时间线与危险信号，给出鉴别诊断和初步检查建议。",
     ),
     AgentProfile(
-        "Emergency and Critical Care Clinician",
-        "triage and time-sensitive diagnoses",
-        "Look for life-threatening findings, urgent escalation thresholds, and must-not-miss diagnoses.",
+        "急诊重症医生",
+        "分诊与时效性危重识别",
+        "重点排查危及生命的表现，明确需要紧急升级处理的红线与最不能漏诊的诊断。",
     ),
     AgentProfile(
-        "Radiologist",
-        "medical-image interpretation and imaging pitfalls",
-        "Describe visible imaging patterns cautiously, identify limitations, and give a structured impression.",
+        "放射科医生",
+        "影像判读与影像陷阱",
+        "谨慎描述可见的影像学表现，指出判读的局限性，给出结构化的影像印象。",
     ),
     AgentProfile(
-        "Clinical Pharmacist",
-        "medication safety and treatment optimization",
-        "Consider medication options, contraindications, interactions, monitoring, and renal or hepatic adjustment when relevant.",
+        "临床药师",
+        "用药安全与治疗方案优化",
+        "评估用药选择、禁忌证、药物相互作用与监测要点，必要时考虑肝肾功能剂量调整。",
     ),
 )
 
@@ -62,15 +75,48 @@ TRIAGE_PROFILES: Tuple[AgentProfile, ...] = (
     DISCUSSION_PROFILES[1],
     DISCUSSION_PROFILES[2],
     AgentProfile(
-        "Relevant Clinical Specialist",
-        "organ-system differential diagnosis and management",
-        "Focus on the organ system and clinical context in the question, and identify the next safest action.",
+        "专科医生",
+        "受累器官系统的鉴别诊断与处理",
+        "聚焦问题涉及的器官系统与临床背景，给出下一步最稳妥的处理动作。",
     ),
 )
 
 
 class MASWorkflowError(ValueError):
     """Raised when a multi-agent workflow cannot be executed."""
+
+
+def _sanitize_model_text(text: str) -> str:
+    """Clean text-level transport damage before it enters the workflow.
+
+    Upstream relays occasionally corrupt multi-byte UTF-8 (truncated emoji,
+    chunk-boundary splits) which surfaces as the replacement character
+    ``\ufffd``. Left in place it poisons every later prompt: downstream
+    agents start retransmitting and commenting on the "garbled character".
+    The damaged byte is unrecoverable, so drop the marker instead.
+    """
+    if "\ufffd" in text:
+        text = text.replace("\ufffd", "")
+    return text
+
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_thinking(text: str) -> str:
+    """Drop reasoning-model chain-of-thought blocks from model output.
+
+    Some relays inline ``<think>...</think>`` blocks into ``content``; an
+    unclosed ``<think>`` means the budget was cut mid-thinking, so everything
+    from the tag on is reasoning rather than the answer.
+    """
+    if not text:
+        return text
+    text = _THINK_BLOCK_RE.sub("", text)
+    idx = text.lower().find("<think>")
+    if idx != -1:
+        text = text[:idx]
+    return text
 
 
 def _message_text(response: Any) -> str:
@@ -83,8 +129,10 @@ def _message_text(response: Any) -> str:
     content = getattr(message, "content", None)
     if content is None and isinstance(message, dict):
         content = message.get("content")
-    if isinstance(content, str) and content.strip():
-        return content.strip()
+    if isinstance(content, str):
+        text = _strip_thinking(content).strip()
+        if text:
+            return _sanitize_model_text(text)
     if isinstance(content, list):
         parts: List[str] = []
         for item in content:
@@ -96,8 +144,9 @@ def _message_text(response: Any) -> str:
                 text = getattr(item, "text", None)
                 if isinstance(text, str):
                     parts.append(text)
-        if parts:
-            return "".join(parts).strip()
+        text = _strip_thinking("".join(parts)).strip()
+        if text:
+            return _sanitize_model_text(text)
 
     # Some reasoning models return an empty final ``content`` when the completion
     # budget is exhausted. Preserve the available text instead of misdiagnosing
@@ -105,7 +154,42 @@ def _message_text(response: Any) -> str:
     reasoning = getattr(message, "reasoning_content", None)
     if reasoning is None and isinstance(message, dict):
         reasoning = message.get("reasoning_content")
-    return str(reasoning or "").strip()
+    return _sanitize_model_text(_strip_thinking(str(reasoning or "")).strip())
+
+
+def _has_final_text(response: Any) -> bool:
+    """True when the response carries visible final content, not only hidden reasoning."""
+    try:
+        message = response.choices[0].message
+    except (AttributeError, IndexError, TypeError):
+        return False
+    content = getattr(message, "content", None)
+    if content is None and isinstance(message, dict):
+        content = message.get("content")
+    if isinstance(content, str) and _strip_thinking(content).strip():
+        return True
+    if isinstance(content, list):
+        for item in content:
+            if isinstance(item, str) and item.strip():
+                return True
+            if isinstance(item, dict) and isinstance(item.get("text"), str) and item["text"].strip():
+                return True
+            text = getattr(item, "text", None)
+            if isinstance(text, str) and text.strip():
+                return True
+    return False
+
+
+def _reasoning_text(response: Any) -> str:
+    """Best-effort extraction of the model's hidden reasoning (last-resort fallback)."""
+    try:
+        message = response.choices[0].message
+    except (AttributeError, IndexError, TypeError):
+        return ""
+    reasoning = getattr(message, "reasoning_content", None)
+    if reasoning is None and isinstance(message, dict):
+        reasoning = message.get("reasoning_content")
+    return reasoning if isinstance(reasoning, str) else ""
 
 
 def _call_agent(
@@ -113,22 +197,27 @@ def _call_agent(
     model: str,
     messages: List[Dict[str, Any]],
     stats: WorkflowStats,
+    temperature: float = 0.1,
 ) -> str:
     last_error: Exception | None = None
-    for attempt, max_tokens in enumerate((1536, 1024, 768)):
+    reasoning_tail = ""
+    # Attempt 1 keeps a small budget so specialist calls stay below common
+    # relay/ALB time limits. Reasoning models can spend the entire budget on
+    # hidden thinking and return an empty final ``content`` — later attempts
+    # raise the ceiling so the visible answer fits.
+    for attempt, max_tokens in enumerate((1536, 4096, 4096)):
         try:
             response = client.chat.completions.create(
                 model=model,
                 messages=messages,
-                temperature=0.1,
-                # Keep each specialist call below common relay/ALB time limits.
+                temperature=temperature,
                 max_tokens=max_tokens,
             )
             stats.calls += 1
             stats.add_usage(response)
-            answer = _message_text(response)
-            if answer:
-                return answer
+            if _has_final_text(response):
+                return _message_text(response)
+            reasoning_tail = _reasoning_text(response) or reasoning_tail
             last_error = MASWorkflowError(
                 "The model returned an empty assistant message; the output budget may be exhausted."
             )
@@ -143,6 +232,11 @@ def _call_agent(
         if attempt < 2:
             time.sleep(1.5 * (attempt + 1))
 
+    # Last resort: when no final content ever arrived, surface the model's own
+    # reasoning instead of failing the whole consultation. The prompt-level
+    # output rules and the retry with a larger budget make this path rare.
+    if reasoning_tail:
+        return _sanitize_model_text(_strip_thinking(reasoning_tail).strip())
     if last_error is not None:
         if isinstance(last_error, MASWorkflowError):
             raise last_error
@@ -152,13 +246,14 @@ def _call_agent(
 
 def _role_system(profile: AgentProfile) -> str:
     return (
-        "You are part of a medical review team. Your output supports clinical reasoning "
-        "and is not a definitive diagnosis. Do not invent findings that are not visible "
-        "or supplied in the case. State uncertainty and recommend professional review "
-        "when appropriate.\n\n"
-        f"Your role: {profile.name}.\n"
-        f"Your specialty: {profile.specialty}.\n"
-        f"Your task: {profile.instruction}"
+        "你是一支医疗会诊团队的成员。你的输出仅用于辅助临床推理，不构成最终诊断。"
+        "不要臆造影像或病历中不存在的信息；存在不确定性时如实说明，"
+        "并在适当情况下建议由执业医师复核。\n\n"
+        f"你的角色：{profile.name}。\n"
+        f"你的专长：{profile.specialty}。\n"
+        f"你的任务：{profile.instruction}\n\n"
+        "请全程使用简体中文作答；医学术语首次出现时可括注英文缩写。"
+        "请勿使用 emoji 表情或特殊装饰符号（对勾、警告、圆点等），仅使用常规标点。"
     )
 
 
@@ -191,18 +286,18 @@ def _clinical_panel(
         reports.append((profile.name, answer))
 
     synthesis_prompt = (
-        "You are the chief medical reviewer. Synthesize the independent reports below "
-        "for the question. Separate observed imaging facts from hypotheses, resolve "
-        "disagreements, identify missing information, and give a concise prioritized "
-        "clinical conclusion with recommended next steps. Include an explicit safety "
-        "note that this does not replace a qualified clinician.\n\n"
-        f"Question: {question}\n\nReports:\n{_report_block(reports)}"
+        "你是首席医学评审。请综合下方的各份独立报告回答该问题："
+        "区分已观察到的影像事实与假设，消解分歧，指出缺失的信息，"
+        "给出简明、有优先级的临床结论与建议的后续步骤，"
+        "并附明确的安全提示（本结论不能替代执业医师）。"
+        "请全程使用简体中文作答；请勿使用 emoji 或特殊符号。\n\n"
+        f"问题：{question}\n\n报告：\n{_report_block(reports)}"
     )
     return _call_agent(
         client,
         model,
         [
-            {"role": "system", "content": "You are a senior medical reviewer."},
+            {"role": "system", "content": "你是一名资深医学评审。请全程使用简体中文作答。"},
             {"role": "user", "content": synthesis_prompt},
         ],
         stats,
@@ -230,18 +325,17 @@ def _triage_panel(
         reports.append((profile.name, answer))
 
     final_prompt = (
-        "Act as the final triage lead. Review these specialist assessments and answer "
-        "the original question. Prioritize immediate danger, urgency, the most likely "
-        "explanation, and the next action. Do not claim certainty beyond the provided "
-        "image and history. Return a concise clinical response followed by a safety "
-        "disclaimer.\n\n"
-        f"Question: {question}\n\nAssessments:\n{_report_block(reports)}"
+        "你是急诊分诊高年资组长。请审阅各专科评估并回答原始问题："
+        "优先考虑即刻危险、紧迫程度、最可能的解释与下一步处置。"
+        "不要给出超出所提供影像与病史的确定性结论，"
+        "最后以一句安全声明收尾。请全程使用简体中文作答；请勿使用 emoji 或特殊符号。\n\n"
+        f"问题：{question}\n\n评估：\n{_report_block(reports)}"
     )
     return _call_agent(
         client,
         model,
         [
-            {"role": "system", "content": "You are a senior emergency triage reviewer."},
+            {"role": "system", "content": "你是急诊分诊高年资评审。请全程使用简体中文作答。"},
             {"role": "user", "content": final_prompt},
         ],
         stats,
@@ -280,11 +374,11 @@ def _discussion(
         for profile in DISCUSSION_PROFILES:
             peer_reports = [item for item in previous if item[0] != profile.name]
             prompt = (
-                f"Original question: {question}\n\n"
-                "Review the other specialists' assessments below. Correct errors, state "
-                "where evidence is insufficient, and provide your updated assessment. "
-                f"This is discussion round {round_index + 1} of {rounds}.\n\n"
-                f"Peer assessments:\n{_report_block(peer_reports)}"
+                f"原始问题：{question}\n\n"
+                "请审阅下方其他专科医生的评估意见：纠正其中的错误，指出证据不足之处，"
+                "并给出你更新后的评估。"
+                f"本轮为第 {round_index + 1}/{rounds} 轮讨论。请全程使用简体中文作答。\n\n"
+                f"同行评估：\n{_report_block(peer_reports)}"
             )
             answer = _call_agent(
                 client,
@@ -299,17 +393,16 @@ def _discussion(
         reports = updated
 
     final_prompt = (
-        "You are the lead reviewer. Use the final specialist assessments to answer the "
-        "original question. Give one coherent, prioritized answer; distinguish image "
-        "observations from possible diagnoses and include safe next steps. Add a short "
-        "statement that the output is decision support, not a diagnosis.\n\n"
-        f"Question: {question}\n\nFinal assessments:\n{_report_block(reports)}"
+        "你是主诊评审。请依据各位专科医生的最终评估回答原始问题："
+        "给出一份连贯、有优先级的结论；区分影像观察与可能诊断，并包含安全的后续处理步骤。"
+        "最后附一句说明：本输出仅为决策支持，不构成诊断。\n\n"
+        f"问题：{question}\n\n最终评估：\n{_report_block(reports)}"
     )
     return _call_agent(
         client,
         model,
         [
-            {"role": "system", "content": "You are the lead medical reviewer."},
+            {"role": "system", "content": "你是主诊医学评审。请全程使用简体中文作答。"},
             {"role": "user", "content": final_prompt},
         ],
         stats,
@@ -362,3 +455,793 @@ def run_workflow(
         "rounds": rounds if strategy == "discussion" else 1,
     }
     return answer, token_stats, metadata
+
+
+# ---------------------------------------------------------------------------
+# Orchestration-engine based workflows (MedMASLab agent design migrated here).
+#
+# The declarative specs below map each ``mas_strategy`` to a typed data-flow
+# graph.  ``RuntimeEngine`` executes it and emits a ``Trace`` event stream that
+# the OHIF viewer replays as a live agent data-flow visualization.
+# ---------------------------------------------------------------------------
+
+_DISCUSSION_ZH = {}  # 角色名已直接使用中文（AgentProfile.name），保留空映射兼容旧引用。
+
+_TRIAGE_ZH = {}
+
+_GATE_ROLE = (
+    "你是一名严谨的医学评审。请判断各位专家是否已就同一结论达成收敛。"
+    "请先输出恰好一个英文判定词（'converged' 表示已收敛，'not converged' 表示未收敛），"
+    "随后用简体中文给出一段简明、可操作的修改意见。"
+)
+
+_LEAD_ROLE = (
+    "你是主诊医生。请综合各位专家的最终评估回答原始问题："
+    "给出一份连贯、有优先级的结论，区分影像观察与可能诊断，并包含安全的后续处理建议。"
+    "最后附一句说明：本结论仅为决策支持，不能替代执业医师诊断。请全程使用简体中文作答。"
+)
+
+_CHIEF_ROLE = (
+    "你是首席评审。请针对问题综合各份独立报告：区分已观察到的影像事实与假设，"
+    "消解分歧，指出缺失的信息，给出简明、有优先级的临床结论与建议的后续步骤，"
+    "并附明确的安全提示（本结论不能替代执业医师）。请全程使用简体中文作答。"
+)
+
+_TRIAGE_LEAD_ROLE = (
+    "你是急诊分诊高年资评审。请审阅各专科评估并回答原始问题："
+    "优先考虑即刻危险、紧迫程度、最可能的解释与下一步处置。"
+    "不要给出超出所提供影像与病史的确定性结论，最后以一句安全声明收尾。"
+    "请全程使用简体中文作答。"
+)
+
+_SINGLE_ROLE = (
+    "你是一名经验丰富的医学专家。请逐步推理并给出最终结论。"
+    "请全程使用简体中文作答；医学术语首次出现时可括注英文缩写。"
+)
+
+
+def _extract_image_parts(initial_content: Any) -> List[Dict[str, Any]]:
+    """Pull only the ``image_url`` parts out of an OpenAI-chat ``content`` payload."""
+    if isinstance(initial_content, str) or not initial_content:
+        return []
+    parts: List[Dict[str, Any]] = []
+    for item in initial_content:
+        if isinstance(item, dict) and item.get("type") == "image_url":
+            parts.append(item)
+    return parts
+
+
+def _n(nid, kind, name="", role="", agg=AggregatorStrategy.VOTE, targets=None,
+       rbb=False, wbb=False, extra=None) -> NodeSpec:
+    return NodeSpec(
+        id=nid, kind=kind, name=name or nid, role_prompt=role, aggregator=agg,
+        route_targets=targets or [], read_blackboard=rbb, write_blackboard=wbb,
+        extra=extra or {},
+    )
+
+
+def _e(src, dst, port="", loop=False) -> EdgeSpec:
+    return EdgeSpec(src, dst, port, loop)
+
+
+def _single_spec() -> OrchestrationSpec:
+    return OrchestrationSpec(
+        name="SingleExpert",
+        nodes={"in": _n("in", NodeKind.IO),
+               "expert": _n("expert", NodeKind.AGENT, "医学专家", _SINGLE_ROLE),
+               "out": _n("out", NodeKind.IO)},
+        edges=[_e("in", "expert"), _e("expert", "out")],
+        entry="in", exit="out", max_rounds=1,
+    )
+
+
+def _discussion_spec(rounds: int) -> OrchestrationSpec:
+    agents = []
+    for i, profile in enumerate(DISCUSSION_PROFILES, start=1):
+        agents.append(_n(f"d{i}", NodeKind.AGENT, _DISCUSSION_ZH.get(profile.name, profile.name),
+                         _role_system(profile), rbb=True, wbb=True))
+    nodes = [_n("in", NodeKind.IO)] + agents + [
+        _n("gate", NodeKind.EVALUATOR, "会诊收敛门", _GATE_ROLE),
+        _n("lead", NodeKind.AGGREGATOR, "主诊医生", _LEAD_ROLE, agg=AggregatorStrategy.SUMMARIZE),
+        _n("out", NodeKind.IO),
+    ]
+    edges = [_e("in", f"d{i}") for i in range(1, len(DISCUSSION_PROFILES) + 1)]
+    edges += [_e(f"d{i}", "gate") for i in range(1, len(DISCUSSION_PROFILES) + 1)]
+    edges += [_e(f"d{i}", "lead") for i in range(1, len(DISCUSSION_PROFILES) + 1)]
+    edges += [_e("gate", f"d{i}", loop=True) for i in range(1, len(DISCUSSION_PROFILES) + 1)]
+    edges += [_e("lead", "out")]
+    return OrchestrationSpec(
+        name="Discussion", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=max(1, min(int(rounds), 5)),
+    )
+
+
+def _clinical_panel_spec() -> OrchestrationSpec:
+    agents = []
+    for i, profile in enumerate(DISCUSSION_PROFILES, start=1):
+        agents.append(_n(f"d{i}", NodeKind.AGENT, _DISCUSSION_ZH.get(profile.name, profile.name),
+                         _role_system(profile)))
+    nodes = [_n("in", NodeKind.IO)] + agents + [
+        _n("chief", NodeKind.AGGREGATOR, "首席评审", _CHIEF_ROLE, agg=AggregatorStrategy.SUMMARIZE),
+        _n("out", NodeKind.IO),
+    ]
+    edges = [_e("in", f"d{i}") for i in range(1, len(DISCUSSION_PROFILES) + 1)]
+    edges += [_e(f"d{i}", "chief") for i in range(1, len(DISCUSSION_PROFILES) + 1)]
+    edges += [_e("chief", "out")]
+    return OrchestrationSpec(
+        name="ClinicalPanel", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=1,
+    )
+
+
+def _triage_panel_spec() -> OrchestrationSpec:
+    agents = []
+    for i, profile in enumerate(TRIAGE_PROFILES, start=1):
+        agents.append(_n(f"t{i}", NodeKind.AGENT, _TRIAGE_ZH.get(profile.name, profile.name),
+                         _role_system(profile)))
+    nodes = [_n("in", NodeKind.IO)] + agents + [
+        _n("lead", NodeKind.AGGREGATOR, "分诊组长", _TRIAGE_LEAD_ROLE, agg=AggregatorStrategy.SUMMARIZE),
+        _n("out", NodeKind.IO),
+    ]
+    edges = [_e("in", f"t{i}") for i in range(1, len(TRIAGE_PROFILES) + 1)]
+    edges += [_e(f"t{i}", "lead") for i in range(1, len(TRIAGE_PROFILES) + 1)]
+    edges += [_e("lead", "out")]
+    return OrchestrationSpec(
+        name="TriagePanel", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=1,
+    )
+
+
+# ---------------------------------------------------------------------------
+# MedMASLab 方法移植（Debate / MDAgents / MDTeamGPT / ReConcile / MetaPrompting
+# / AutoGen / DyLAN / MedAgents / ColaCare / SC / CoT）。
+#
+# 每个构建器把对应论文/MedMASLab 参考实现的多智能体拓扑映射为一张声明式
+# OrchestrationSpec 图：ROLE 提示词忠实还原各方法里每个角色的职责，
+# 收敛/终止判定交给 EVALUATOR 节点，循环用显式 ``loop=True`` 回边表达。
+# 所有角色提示词均要求全程简体中文作答。
+# ---------------------------------------------------------------------------
+
+_ZH = "请全程使用简体中文作答；医学术语首次出现时可括注英文缩写。"
+
+
+def _converged_gate_role(extra: str = "") -> str:
+    return (
+        "你是严谨的会评裁判。请判断各专家是否已就结论达成收敛。"
+        "请先输出恰好一个英文判定词（'converged' 表示已收敛，'not converged' 表示未收敛），"
+        "未收敛时随后用一句话给出修改意见。" + extra + _ZH
+    )
+
+
+_DEBATE_GATE_ROLE = _converged_gate_role("收敛时请明确认可现有答案。")
+
+
+def _debate_spec() -> OrchestrationSpec:
+    """Debate（Du et al.）：3 名辩手互相审视对方答案并迭代修正，末轮由评委裁决。"""
+    roles = (
+        "你是辩论会诊中的辩论专家甲。先独立给出你的判断与依据；看到同伴观点后，"
+        "逐步审视自己与他人的推理，纠正错误并更新结论，最后一轮以“最终答案：”开头给出明确结论。" + _ZH,
+        "你是辩论会诊中的辩论专家乙。先独立给出你的判断与依据；看到同伴观点后，"
+        "重点挑战证据不足、逻辑跳跃的论断并给出更稳的替代解释，最后一轮以“最终答案：”开头给出明确结论。" + _ZH,
+        "你是辩论会诊中的辩论专家丙。先独立给出你的判断与依据；看到同伴观点后，"
+        "负责核查证据与影像事实是否被正确引用，指出过度推断，"
+        "最后一轮以“最终答案：”开头给出明确结论。" + _ZH,
+    )
+    nodes: List[NodeSpec] = [_n("in", NodeKind.IO)]
+    edges: List[EdgeSpec] = []
+    for i, role in enumerate(roles, start=1):
+        nodes.append(_n(f"deb{i}", NodeKind.AGENT, f"辩论专家{'甲乙丙'[i - 1]}", role,
+                        rbb=True, wbb=True))
+        edges += [
+            _e("in", f"deb{i}"),
+            _e(f"deb{i}", "gate"),
+            _e(f"deb{i}", "judge"),
+            _e("gate", f"deb{i}", loop=True),
+        ]
+    nodes += [
+        _n("gate", NodeKind.EVALUATOR, "辩论收敛门", _DEBATE_GATE_ROLE),
+        _n("judge", NodeKind.AGGREGATOR, "评委裁决",
+           "你是辩论评委。请统计各辩手最新答案，按少数服从多数裁决分歧；"
+           "若难以裁决，采纳论证最充分的一方并说明理由。给出面向临床的连贯结论。" + _ZH,
+           agg=AggregatorStrategy.VOTE),
+        _n("out", NodeKind.IO),
+    ]
+    edges.append(_e("judge", "out"))
+    return OrchestrationSpec(
+        name="Debate", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=2,
+    )
+
+
+def _mdagents_spec() -> OrchestrationSpec:
+    """MDAgents：先评估难度——简单问题单专家直答，复杂问题招募小组协作后表决。"""
+    expert_role = (
+        "你是受招募的临床专家。请结合会诊组长的工作安排与同伴意见，"
+        "基于你的专长独立分析并给出结论与依据。" + _ZH
+    )
+    nodes = [
+        _n("in", NodeKind.IO),
+        _n("router", NodeKind.ROUTER, "难度评估路由",
+           "你是 MDAgents 的难度评估器。请评估该问题（结合影像）的复杂度："
+           "若一名医生即可可靠作答，只回复 solo；若需多名专家协作，只回复 recruiter。",
+           targets=["solo", "recruiter"]),
+        _n("solo", NodeKind.AGENT, "全科医生", _SINGLE_ROLE),
+        _n("recruiter", NodeKind.AGENT, "会诊组长",
+           "你是会诊组长（MDAgents 招募者）。请针对该问题拟定简短的多学科工作安排，"
+           "明确各专家的分工与关注点。" + _ZH, wbb=True),
+        _n("e1", NodeKind.AGENT, "专家一（内科视角）", expert_role, rbb=True, wbb=True),
+        _n("e2", NodeKind.AGENT, "专家二（影像视角）", expert_role, rbb=True, wbb=True),
+        _n("e3", NodeKind.AGENT, "专家三（专科视角）", expert_role, rbb=True, wbb=True),
+        _n("mod", NodeKind.AGGREGATOR, "主持人表决",
+           "你是最终决策主持人。请审阅各专家结论，按少数服从多数原则给出最终答案，"
+           "分歧较大时说明你的取舍依据。" + _ZH,
+           agg=AggregatorStrategy.VOTE),
+        _n("out", NodeKind.IO),
+    ]
+    edges = [
+        _e("in", "router"),
+        _e("router", "solo"), _e("router", "recruiter"),
+        _e("solo", "out"),
+        _e("recruiter", "e1"), _e("recruiter", "e2"), _e("recruiter", "e3"),
+        _e("e1", "mod"), _e("e2", "mod"), _e("e3", "mod"),
+        _e("mod", "out"),
+    ]
+    return OrchestrationSpec(
+        name="MDAgents", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=1,
+    )
+
+
+def _mdteamgpt_spec() -> OrchestrationSpec:
+    """MDTeamGPT：全科分诊组建 MDT，各专科逐轮独立发言，组长逐轮综合，直至收敛。"""
+    specialist_role = (
+        "你是多学科团队（MDT）中的专科成员。每轮发言只依据分诊意见与既往轮次纪要，"
+        "保持独立判断，不要假设已看到本轮其他专科的发言；"
+        "给出你的发现、鉴别要点与建议。" + _ZH
+    )
+    specialists = ("影像科医生", "内科医生", "外科医生", "肿瘤科医生")
+    nodes: List[NodeSpec] = [
+        _n("in", NodeKind.IO),
+        _n("triage", NodeKind.AGENT, "全科分诊医生",
+           "你是 MDTeamGPT 的全科分诊医生。请概括病例要点，说明为何需要该多学科团队，"
+           "并向各专科成员布置本轮关注的重点问题。" + _ZH, wbb=True),
+    ]
+    edges: List[EdgeSpec] = [_e("in", "triage")]
+    for i, name in enumerate(specialists, start=1):
+        nodes.append(_n(f"s{i}", NodeKind.AGENT, name, specialist_role, rbb=True, wbb=True))
+        edges += [_e("triage", f"s{i}"), _e(f"s{i}", "gate"), _e(f"s{i}", "lead"),
+                  _e("gate", f"s{i}", loop=True)]
+    nodes += [
+        _n("gate", NodeKind.EVALUATOR, "轮次收敛门", _DEBATE_GATE_ROLE),
+        _n("lead", NodeKind.AGGREGATOR, "主诊组长",
+           "你是 MDT 主诊组长。请汇总本轮各专科发言形成简要会诊纪要（后续轮次将以此为基础），"
+           "并给出当前最可能的结论与待办事项。" + _ZH,
+           agg=AggregatorStrategy.SUMMARIZE),
+        _n("out", NodeKind.IO),
+    ]
+    edges.append(_e("lead", "out"))
+    return OrchestrationSpec(
+        name="MDTeamGPT", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=3,
+    )
+
+
+def _reconcile_spec() -> OrchestrationSpec:
+    """ReConcile：3 个独立视角先作答并给出置信度，加权调和；未全票一致则辩论修正。"""
+    reasoner_roles = (
+        ("首选诊断视角", "优先考虑最可能的单一诊断，给出支持要点，并标注你的置信度。"),
+        ("鉴别诊断视角", "系统列出需鉴别的疾病谱并逐一排除，给出你倾向的结论，并标注你的置信度。"),
+        ("循证核查视角", "核查影像与病史证据是否支撑结论，指出证据缺口，给出修正后的结论，并标注你的置信度。"),
+    )
+    nodes: List[NodeSpec] = [_n("in", NodeKind.IO)]
+    edges: List[EdgeSpec] = []
+    for i, (name, task) in enumerate(reasoner_roles, start=1):
+        role = (
+            f"你是 ReConcile 框架中的独立推理者（{name}）。首轮请完全独立作答，不要参考他人。"
+            f"{task}答复最后一行请写“置信度：0.XX”。"
+            "后续轮次会看到同伴的最新答案与调和意见，请修正或坚持你的结论并重申置信度。" + _ZH
+        )
+        nodes.append(_n(f"r{i}", NodeKind.AGENT, name, role, rbb=True, wbb=True))
+        edges += [_e("in", f"r{i}"), _e(f"r{i}", "wv"), _e(f"r{i}", "gate"),
+                  _e("gate", f"r{i}", loop=True)]
+    nodes += [
+        _n("wv", NodeKind.AGGREGATOR, "置信度加权调和",
+           "你是 ReConcile 的调和裁判。请按各方置信度与论据强度加权裁决："
+           "意见一致时直接采纳；不一致时以高置信度方为主并说明取舍。" + _ZH,
+           agg=AggregatorStrategy.WEIGHTED),
+        _n("gate", NodeKind.EVALUATOR, "全票一致核查",
+           _converged_gate_role("仅当各方结论实质一致（同一诊断方向）才判 converged。")),
+        _n("out", NodeKind.IO),
+    ]
+    edges.append(_e("wv", "out"))
+    return OrchestrationSpec(
+        name="ReConcile", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=3,
+    )
+
+
+def _metaprompting_spec() -> OrchestrationSpec:
+    """MetaPrompting：元模型统筹拆解问题，领域专家作答，元模型终审并驱动迭代。"""
+    return OrchestrationSpec(
+        name="MetaPrompting",
+        nodes={
+            "in": _n("in", NodeKind.IO),
+            "meta": _n("meta", NodeKind.AGENT, "元提示统筹者",
+                       "你是 MetaPrompting 的元模型统筹者。请拆解问题、给出向专家咨询的"
+                       "具体指引与关注点，但不要自行下诊断结论。" + _ZH, wbb=True),
+            "expert": _n("expert", NodeKind.AGENT, "领域专家",
+                         "你是受统筹者指派的领域专家。请按其指引逐步作答，"
+                         "给出充分推理与明确结论；若指引有偏差，请指出并按医学实际作答。" + _ZH,
+                         rbb=True, wbb=True),
+            "rev": _n("rev", NodeKind.EVALUATOR, "元提示终审",
+                      _converged_gate_role(
+                          "若专家答案完整可靠请判 converged；否则给出具体的补问或修正指令。")),
+            "fin": _n("fin", NodeKind.AGGREGATOR, "最终答案提炼",
+                      "你是 MetaPrompting 的统筹者终审。请依据专家的最新答案与终审意见，"
+                      "给出简明、面向临床的最终结论。" + _ZH,
+                      agg=AggregatorStrategy.SUMMARIZE),
+            "out": _n("out", NodeKind.IO),
+        },
+        edges=[
+            _e("in", "meta"), _e("meta", "expert"),
+            _e("expert", "rev"), _e("expert", "fin"),
+            _e("rev", "expert", loop=True),
+            _e("fin", "out"),
+        ],
+        entry="in", exit="out", max_rounds=3,
+    )
+
+
+def _autogen_spec() -> OrchestrationSpec:
+    """AutoGen：助手智能体与用户代理多轮对话，用户代理判定是否终止并给出反馈。"""
+    return OrchestrationSpec(
+        name="AutoGen",
+        nodes={
+            "in": _n("in", NodeKind.IO),
+            "asst": _n("asst", NodeKind.AGENT, "助手智能体",
+                       "你是 AutoGen 框架中的医学助手智能体。请与用户代理协作完成会诊作答："
+                       "给出充分推理与明确结论；收到反馈后逐条回应并修订。" + _ZH),
+            "proxy": _n("proxy", NodeKind.EVALUATOR, "用户代理",
+                        _converged_gate_role(
+                            "若助手回复已完整、可作为交付结论（相当于发出终止消息），判 converged；"
+                            "否则指出仍缺失的内容，让助手继续补充。")),
+            "out": _n("out", NodeKind.IO),
+        },
+        edges=[
+            _e("in", "asst"), _e("asst", "proxy"), _e("asst", "out"),
+            _e("proxy", "asst", loop=True),
+        ],
+        entry="in", exit="out", max_rounds=3,
+    )
+
+
+def _dylan_spec() -> OrchestrationSpec:
+    """DyLAN：分层激活的动态智能体网络，共识早停，最终按高频答案裁决。"""
+    roles = (
+        ("智能体一（全科视角）", "概括主诉、病程与优先处理事项。"),
+        ("智能体二（影像视角）", "聚焦影像证据与判读局限。"),
+        ("智能体三（内科视角）", "给出诊断假设与内科处置。"),
+        ("智能体四（外科视角）", "评估是否需要手术或操作干预。"),
+    )
+    nodes: List[NodeSpec] = [_n("in", NodeKind.IO)]
+    edges: List[EdgeSpec] = []
+    for i, (name, task) in enumerate(roles, start=1):
+        role = (
+            f"你是 DyLAN 动态分层网络中的独立智能体（{name}）。你的任务：{task}"
+            "每轮基于网络中累积的信息更新你的结论；共识达成后不再改动。" + _ZH
+        )
+        nodes.append(_n(f"a{i}", NodeKind.AGENT, name, role, rbb=True, wbb=True))
+        edges += [_e("in", f"a{i}"), _e(f"a{i}", "gate"), _e(f"a{i}", "agg"),
+                  _e("gate", f"a{i}", loop=True)]
+    nodes += [
+        _n("gate", NodeKind.EVALUATOR, "共识早停检查", _DEBATE_GATE_ROLE),
+        _n("agg", NodeKind.AGGREGATOR, "高频答案裁决",
+           "你是 DyLAN 的答案裁决器。请统计各智能体答案，采纳出现频率最高的结论；"
+           "若出现多种说法，选择论据最充分者并说明票数分布。" + _ZH,
+           agg=AggregatorStrategy.VOTE),
+        _n("out", NodeKind.IO),
+    ]
+    edges.append(_e("agg", "out"))
+    return OrchestrationSpec(
+        name="DyLAN", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=3,
+    )
+
+
+def _medagents_spec() -> OrchestrationSpec:
+    """MedAgents：招募领域专家→独立分析→报告汇总→综合验证循环，直至结论稳定。"""
+    nodes: List[NodeSpec] = [
+        _n("in", NodeKind.IO),
+        _n("rc", NodeKind.AGENT, "专家招募",
+           "你是 MedAgents 的专家招募者。请针对该问题提出 3 位领域专家的角色设定"
+           "与各自的分析重点（例如影像、内科、循证）。" + _ZH, wbb=True),
+    ]
+    edges: List[EdgeSpec] = [_e("in", "rc")]
+    for i, name in enumerate(("领域专家一", "领域专家二", "领域专家三"), start=1):
+        nodes.append(_n(f"e{i}", NodeKind.AGENT, name,
+                        "你是受招募的领域专家。请按招募方案中你的角色独立完成分析，"
+                        "给出发现、鉴别与建议。" + _ZH, rbb=True, wbb=True))
+        edges += [_e("rc", f"e{i}"), _e(f"e{i}", "rep"), _e(f"e{i}", "gate"),
+                  _e("gate", f"e{i}", loop=True)]
+    nodes += [
+        _n("rep", NodeKind.AGGREGATOR, "会诊报告汇总",
+           "你是 MedAgents 的报告汇总者。请把各专家分析整合成一份结构化会诊报告"
+           "（发现/鉴别/建议），供下一轮综合验证使用。" + _ZH,
+           agg=AggregatorStrategy.SUMMARIZE),
+        _n("gate", NodeKind.EVALUATOR, "综合验证门",
+           _converged_gate_role("请核对报告是否忠实于各专家意见且结论完整。")),
+        _n("out", NodeKind.IO),
+    ]
+    edges.append(_e("rep", "out"))
+    return OrchestrationSpec(
+        name="MedAgents", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=3,
+    )
+
+
+def _colacare_spec() -> OrchestrationSpec:
+    """ColaCare：内/外/放射三专科给出结构化推荐，主诊裁判官汇总裁决。"""
+    def _rec(spec: str) -> str:
+        return (
+            f"你是 ColaCare 多学科协作中的{spec}。请以结构化方式输出："
+            "1) 诊断印象；2) 建议的进一步检查；3) 治疗/管理方案建议；"
+            "4) 推荐理由与置信度。" + _ZH
+        )
+    return OrchestrationSpec(
+        name="ColaCare",
+        nodes={
+            "in": _n("in", NodeKind.IO),
+            "c1": _n("c1", NodeKind.AGENT, "内科医生", _rec("内科医生")),
+            "c2": _n("c2", NodeKind.AGENT, "外科医生", _rec("外科医生")),
+            "c3": _n("c3", NodeKind.AGENT, "放射科医生", _rec("放射科医生")),
+            "j": _n("j", NodeKind.AGGREGATOR, "主诊裁判官",
+                    "你是 ColaCare 的主诊裁判官（meta reviewer）。请综合三位专科医生的结构化推荐："
+                    "消解分歧、去重补充，给出最终的诊断评估与建议方案，并附安全提示。" + _ZH,
+                    agg=AggregatorStrategy.SUMMARIZE),
+            "out": _n("out", NodeKind.IO),
+        },
+        edges=[
+            _e("in", "c1"), _e("in", "c2"), _e("in", "c3"),
+            _e("c1", "j"), _e("c2", "j"), _e("c3", "j"), _e("j", "out"),
+        ],
+        entry="in", exit="out", max_rounds=1,
+    )
+
+
+def _sc_spec() -> OrchestrationSpec:
+    """SC（Self-Consistency）：5 路独立采样推理，按多数派结论裁决。"""
+    role = "你是一名医学推理采样器。请独立、逐步地推理并给出你的结论。" + _ZH
+    nodes: List[NodeSpec] = [_n("in", NodeKind.IO)]
+    edges: List[EdgeSpec] = []
+    for i in range(1, 6):
+        nodes.append(_n(f"s{i}", NodeKind.AGENT, f"推理样本{i}", role,
+                        extra={"temperature": 0.8}))
+        edges += [_e("in", f"s{i}"), _e(f"s{i}", "agg")]
+    nodes += [
+        _n("agg", NodeKind.AGGREGATOR, "多数派裁决",
+           "你是 Self-Consistency 的裁决器。请统计 5 份独立答案，"
+           "采纳出现频率最高的结论并说明票数分布；无法裁决时选论证最充分者。" + _ZH,
+           agg=AggregatorStrategy.VOTE),
+        _n("out", NodeKind.IO),
+    ]
+    edges.append(_e("agg", "out"))
+    return OrchestrationSpec(
+        name="SelfConsistency", nodes={n.id: n for n in nodes}, edges=edges,
+        entry="in", exit="out", max_rounds=1,
+    )
+
+
+def _cot_spec() -> OrchestrationSpec:
+    """CoT：单专家思维链推理。"""
+    return OrchestrationSpec(
+        name="CoT",
+        nodes={"in": _n("in", NodeKind.IO),
+               "expert": _n("expert", NodeKind.AGENT, "思维链专家",
+                            "你是一名经验丰富的医学专家。让我们一步一步思考："
+                            "先梳理关键信息与影像发现，再逐步推理，最后给出明确结论。" + _ZH),
+               "out": _n("out", NodeKind.IO)},
+        edges=[_e("in", "expert"), _e("expert", "out")],
+        entry="in", exit="out", max_rounds=1,
+    )
+
+
+_STRATEGY_SPECS = {
+    "single": _single_spec,
+    "discussion": _discussion_spec,
+    "clinical-panel": _clinical_panel_spec,
+    "triage-panel": _triage_panel_spec,
+    "expert-panel": lambda rounds=None: build_expert_panel(),
+    # ---- MedMASLab 方法移植 ----
+    "debate": _debate_spec,
+    "mdagents": _mdagents_spec,
+    "mdteamgpt": _mdteamgpt_spec,
+    "reconcile": _reconcile_spec,
+    "metaprompting": _metaprompting_spec,
+    "autogen": _autogen_spec,
+    "dylan": _dylan_spec,
+    "medagents": _medagents_spec,
+    "colacare": _colacare_spec,
+    "sc": _sc_spec,
+    "cot": _cot_spec,
+}
+
+_STRATEGY_META = {
+    "single": "单模型（custom）",
+    "discussion": "Discussion 多轮讨论",
+    "clinical-panel": "临床专家小组",
+    "triage-panel": "急诊分诊小组",
+    "expert-panel": "专家会诊（ExpertPanel）",
+    # ---- MedMASLab 方法移植 ----
+    "debate": "Debate 多智能体辩论",
+    "mdagents": "MDAgents 自适应分层会诊",
+    "mdteamgpt": "MDTeamGPT 多学科团队（MDT）",
+    "reconcile": "ReConcile 多视角调和",
+    "metaprompting": "MetaPrompting 元提示编排",
+    "autogen": "AutoGen 代理对话",
+    "dylan": "DyLAN 动态分层网络",
+    "medagents": "MedAgents 专家分析与验证",
+    "colacare": "ColaCare 多学科协作推荐",
+    "sc": "SC 自一致性投票",
+    "cot": "CoT 思维链",
+}
+
+
+# Output rules appended to every orchestrated agent call. Emoji and other
+# 4-byte symbols are the characters relays most often corrupt into U+FFFD,
+# so models are asked not to use them at all.
+_OUTPUT_RULES = (
+    "输出规范：请全程使用简体中文作答（医学术语首次出现时可括注英文缩写）；"
+    "无论指令或问题使用何种语言，回答一律使用简体中文；"
+    "请勿使用 emoji 表情或特殊装饰符号（对勾、警告、圆点等），仅使用简体中文、英文与常规标点；"
+    "请直接输出面向用户的最终结论，不要输出思考过程、内部推理或 <think> 等标签内容。"
+)
+
+
+def _make_orchestrated_llm_call(client: Any, model: str, image_parts: List[Dict[str, Any]]):
+    """Adapt ``_call_agent`` to the engine's ``llm_call(messages, images)`` contract.
+
+    Returns ``(text, prompt_tokens, completion_tokens)``. The multimodal image
+    parts are prepended to the first user message (the engine passes ``images``
+    only on round 0), and token usage is measured as the delta per call.
+    """
+    stats = WorkflowStats()
+
+    def llm_call(messages, images=None, temperature=None):
+        system = next((m["content"] for m in messages if m.get("role") == "system"), None)
+        user_text = next((m["content"] for m in messages if m.get("role") == "user"), "")
+
+        if images is not None and image_parts:
+            user_content: Any = image_parts + [{"type": "text", "text": user_text}]
+        else:
+            user_content = user_text
+
+        msgs: List[Dict[str, Any]] = []
+        # Chinese-only output rules ride on the system message so every agent
+        # (with or without its own role prompt) obeys them.
+        msgs.append({
+            "role": "system",
+            "content": (f"{system}\n{_OUTPUT_RULES}" if system else _OUTPUT_RULES),
+        })
+        # The user turn carries the actual question (plus the image parts on
+        # round 0). Relays such as LiteLLM reject system-only ``messages``
+        # with ``400 messages 参数非法``, and even when accepted the model
+        # would never see the question — so this append is mandatory.
+        if isinstance(user_content, str) and not user_content.strip():
+            user_content = "请根据系统指令开始作答。"
+        msgs.append({"role": "user", "content": user_content})
+
+        before_pt = stats.prompt_tokens
+        before_ct = stats.completion_tokens
+        text = _call_agent(
+            client, model, msgs, stats,
+            temperature=0.1 if temperature is None else float(temperature),
+        )
+        return text, stats.prompt_tokens - before_pt, stats.completion_tokens - before_ct
+
+    return llm_call
+
+
+# ---------------------------------------------------------------------------
+# Live run registry — lets the viewer poll a running MAS workflow in real time.
+#
+# The POST that executes the workflow is synchronous and only returns the final
+# payload; this registry records every engine event as it happens so a separate
+# GET endpoint (``/mas/runs/{run_id}``) can serve the live data flow to the
+# viewer's popup while the run is still in progress.  Single-process uvicorn
+# only: the registry is intentionally in-memory and TTL-pruned.
+# ---------------------------------------------------------------------------
+
+_MAS_RUNS: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+_MAS_RUNS_LOCK = Lock()
+_MAS_RUN_TTL_SECONDS = 2 * 60 * 60
+_MAS_RUN_MAX_ENTRIES = 32
+
+
+def mas_run_register(run_id: str, strategy: str) -> Dict[str, Any]:
+    """Create (or reset) a registry entry for one MAS run."""
+    entry: Dict[str, Any] = {
+        "run_id": run_id,
+        "status": "running",
+        "strategy": strategy,
+        "strategy_label": _STRATEGY_META.get(strategy, strategy),
+        "spec": None,
+        "events": [],
+        "trace": None,
+        "answer": None,
+        "token_stats": None,
+        "metadata": None,
+        "error": None,
+        "updated_ts": time.time(),
+    }
+    with _MAS_RUNS_LOCK:
+        _MAS_RUNS[run_id] = entry
+        now = time.time()
+        expired = [
+            k for k, v in _MAS_RUNS.items() if now - v.get("updated_ts", 0) > _MAS_RUN_TTL_SECONDS
+        ]
+        for k in expired:
+            _MAS_RUNS.pop(k, None)
+        while len(_MAS_RUNS) > _MAS_RUN_MAX_ENTRIES:
+            _MAS_RUNS.popitem(last=False)
+    return entry
+
+
+def mas_run_update(entry: Dict[str, Any], **fields: Any) -> None:
+    """Lock-protected update of a registry entry."""
+    with _MAS_RUNS_LOCK:
+        entry.update(fields)
+        entry["updated_ts"] = time.time()
+
+
+def mas_run_append_event(entry: Dict[str, Any], event: Dict[str, Any]) -> None:
+    """Lock-protected append of one engine trace event (live streaming)."""
+    with _MAS_RUNS_LOCK:
+        entry["events"].append(event)
+        entry["updated_ts"] = time.time()
+
+
+def mas_run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
+    """Return ``{status, error, payload}`` for a run, or None if unknown.
+
+    ``payload`` matches the viewer's ``MasTracePayload`` shape. While the run
+    is in progress the events accumulated so far are served (live view); once
+    finished, the exact final trace is served.
+    """
+    with _MAS_RUNS_LOCK:
+        entry = _MAS_RUNS.get(run_id)
+        if entry is None:
+            return None
+        spec = entry.get("spec")
+        events = list(entry.get("events") or [])
+        status = entry.get("status")
+        error = entry.get("error")
+        final_trace = entry.get("trace")
+        token_stats = entry.get("token_stats")
+        metadata = entry.get("metadata")
+        answer = entry.get("answer")
+        strategy = entry.get("strategy")
+        strategy_label = entry.get("strategy_label")
+
+    spec_nodes = (spec or {}).get("nodes") or []
+    live_agent_count = sum(
+        1 for n in spec_nodes if n.get("kind") in ("agent", "router", "aggregator", "evaluator")
+    )
+
+    if status == "done" and final_trace is not None:
+        trace = final_trace
+        rounds = int((metadata or {}).get("rounds", 0))
+        agent_count = int((metadata or {}).get("agent_count", live_agent_count))
+        stats = dict(token_stats or {})
+    else:
+        live_rounds = max((int(e.get("round") or 0) for e in events), default=0) + 1
+        live_pt = sum(int(e.get("prompt_tokens") or 0) for e in events)
+        live_ct = sum(int(e.get("completion_tokens") or 0) for e in events)
+        trace = {
+            "name": (spec or {}).get("name", ""),
+            "final_answer": answer or "",
+            "num_llm_calls": sum(1 for e in events if live_pt or live_ct or e.get("type") == "node_end"),
+            "prompt_tokens": live_pt,
+            "completion_tokens": live_ct,
+            "rounds": live_rounds,
+            "events": events,
+        }
+        rounds = live_rounds
+        agent_count = live_agent_count
+        stats = {
+            "num_llm_calls": trace["num_llm_calls"],
+            "prompt_tokens": live_pt,
+            "completion_tokens": live_ct,
+        }
+
+    payload = {
+        "answer": answer or "",
+        "strategy": strategy,
+        "strategy_label": strategy_label,
+        "agent_count": agent_count,
+        "rounds": rounds,
+        "token_stats": stats,
+        "spec": spec,
+        "trace": trace,
+    }
+    return {"status": status, "error": error, "payload": payload}
+
+
+def run_orchestrated_workflow(
+    *,
+    client: Any,
+    model: str,
+    strategy: str,
+    question: str,
+    initial_content: Any,
+    rounds: int = 2,
+    run_id: Optional[str] = None,
+) -> Tuple[str, Dict[str, int], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+    """Run a strategy through the orchestration engine and return the full trace.
+
+    Returns ``(answer, token_stats, metadata, spec_dict, trace_dict)`` where
+    ``spec_dict`` (nodes/edges) and ``trace_dict`` (event stream) are what the
+    viewer needs to render the live agent data-flow visualization.
+
+    When ``run_id`` is provided, every engine event is also streamed into an
+    in-process registry (see :func:`mas_run_snapshot`) so the viewer can poll
+    the run in real time while the POST request is still in flight.
+    """
+    strategy = (strategy or "single").strip().lower()
+    builder = _STRATEGY_SPECS.get(strategy)
+    if builder is None:
+        raise MASWorkflowError(
+            f"Unknown mas_strategy: {strategy}. Available: "
+            f"{', '.join(sorted(_STRATEGY_SPECS))}."
+        )
+
+    entry = mas_run_register(run_id, strategy) if run_id else None
+    spec = builder(rounds) if strategy == "discussion" else builder()
+    if entry is not None:
+        mas_run_update(entry, spec=spec.to_dict())
+
+    image_parts = _extract_image_parts(initial_content)
+    llm_call = _make_orchestrated_llm_call(client, model, image_parts)
+    agent = Agent(llm_call=llm_call, model_name=model)
+    engine = RuntimeEngine(
+        spec, agent,
+        on_event=(lambda ev: mas_run_append_event(entry, ev)) if entry is not None else None,
+    )
+    try:
+        result = engine.run(question, images=initial_content)
+    except Exception as exc:
+        if entry is not None:
+            mas_run_update(entry, status="error", error=str(exc))
+        raise
+
+    token_stats: Dict[str, int] = {
+        "num_llm_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+    }
+    for stats in result.token_stats.values():
+        token_stats["num_llm_calls"] += int(stats.get("num_llm_calls", 0))
+        token_stats["prompt_tokens"] += int(stats.get("prompt_tokens", 0))
+        token_stats["completion_tokens"] += int(stats.get("completion_tokens", 0))
+
+    metadata = {
+        "strategy": strategy,
+        "strategy_label": _STRATEGY_META.get(strategy, strategy),
+        "agent_count": spec.num_agents(),
+        "rounds": result.rounds,
+    }
+    if entry is not None:
+        mas_run_update(
+            entry,
+            status="done",
+            answer=result.final_answer,
+            token_stats=token_stats,
+            metadata=metadata,
+            trace=result.trace.to_dict(),
+        )
+    return (
+        result.final_answer,
+        token_stats,
+        metadata,
+        spec.to_dict(),
+        result.trace.to_dict(),
+    )

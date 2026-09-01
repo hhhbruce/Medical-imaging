@@ -560,17 +560,20 @@ const commandsModule = ({
       });
     }
 
-    // Volume3D viewports: explicit remove+re-add with timeout to ensure actors mount.
+    // Volume3D viewports must render the segmentation as a Surface, not as a
+    // Labelmap volume. Adding a Labelmap here makes the voxel mask a volume
+    // actor in the 3D scene and can visually cover the source CT volume.
+    // SegmentationService normally makes this conversion choice, but this
+    // explicit remount must preserve that choice after an inference update.
     for (const viewportId of volume3DViewportIds) {
       servicesManager.services.segmentationService.removeSegmentationRepresentations(viewportId, {
         segmentationId,
       });
       const vp =
         servicesManager.services.cornerstoneViewportService.getCornerstoneViewport(viewportId);
-      updateLabelmapSegmentationImageReferences(viewportId, segmentationId);
       await servicesManager.services.segmentationService.addSegmentationRepresentation(viewportId, {
         segmentationId,
-        type: csToolsEnums.SegmentationRepresentations.Labelmap,
+        type: csToolsEnums.SegmentationRepresentations.Surface,
       });
       await new Promise(resolve => setTimeout(resolve, 100));
       requestAnimationFrame(() => vp?.render());
@@ -661,6 +664,7 @@ const commandsModule = ({
       segments,
     });
     const mergedSegments = mergeSegmentsForUpdate(segmentationId, segments);
+    const readableText = customizationService.getCustomization('panelSegmentation.readableText');
 
     if (segmentNumber === 1 && Object.keys(existingSegments).length === 0 && !existing) {
       csToolsSegmentation.addSegmentations([
@@ -681,8 +685,6 @@ const commandsModule = ({
         },
       ]);
     } else {
-      const readableText = customizationService.getCustomization('panelSegmentation.readableText');
-
       const existingSegmentation =
         prevSegmentation ?? csToolsSegmentation.state.getSegmentation(segmentationId);
       const existingRepresentationData = existingSegmentation?.representationData || {};
@@ -705,10 +707,6 @@ const commandsModule = ({
           },
         },
       ]);
-
-      // Off the critical path — do NOT await. Holding the inference lock on this
-      // ~5s multi-block stats computation queued every subsequent live-mode trigger.
-      scheduleSegmentationStats(segmentationId, segmentNumber, readableText);
     }
 
     // Only make the target segment visible if it's newly added — not a refinement.
@@ -747,6 +745,11 @@ const commandsModule = ({
       currentImageIdIndex,
       representations,
     });
+
+    // Compute statistics only after the labelmap representation has been synchronized.
+    // This is required for newly-created segments: the statistics worker must see the
+    // new block and its segment binding, not the representation from the previous run.
+    scheduleSegmentationStats(segmentationId, segmentNumber, readableText);
   }
 
   const actions = {
@@ -1439,17 +1442,30 @@ const commandsModule = ({
       const pos_boxes: any[] = [];
       const seriesUID = currentDisplaySets.SeriesInstanceUID;
       const imageIdsSam2: string[] = currentDisplaySets.imageIds ?? [];
+      const sliceSOPInstanceUIDs: string[] = imageIdsSam2
+        .map(imageId => {
+          const image = cache.getImage(imageId) as any;
+          const instance = currentDisplaySets.instances?.find(
+            (candidate: any) => candidate.imageId === imageId
+          );
+          return instance?.SOPInstanceUID ?? image?.SOPInstanceUID;
+        })
+        .filter((uid): uid is string => typeof uid === 'string' && uid.length > 0);
+      const hasCompleteSliceUIDMap =
+        sliceSOPInstanceUIDs.length === imageIdsSam2.length &&
+        new Set(sliceSOPInstanceUIDs).size === sliceSOPInstanceUIDs.length;
       const imageData = (activeViewport.getImageData?.() as any)?.imageData;
       const isStackViewport = !(activeViewport instanceof VolumeViewport);
       const isValidIJK = (point: unknown): point is number[] =>
         Array.isArray(point) && point.length >= 3 && point.slice(0, 3).every(Number.isFinite);
-      const normalizeIJK = (point: number[], measurement: any): number[] => {
+      const normalizeIJK = (point: number[], measurement: any): number[] | undefined => {
         const ijk = point.slice(0, 3).map(value => Math.round(value));
         if (isStackViewport) {
           const referencedSlice = imageIdsSam2.indexOf(measurement.referencedImageId);
-          if (referencedSlice >= 0) {
-            ijk[2] = referencedSlice;
+          if (referencedSlice < 0) {
+            return undefined;
           }
+          ijk[2] = referencedSlice;
         }
         return ijk;
       };
@@ -1484,16 +1500,22 @@ const commandsModule = ({
           let corners: number[][] = [];
 
           if (isValidIJK(firstPoint) && isValidIJK(lastPoint)) {
-            corners = [normalizeIJK(firstPoint, e), normalizeIJK(lastPoint, e)];
+            corners = [normalizeIJK(firstPoint, e), normalizeIJK(lastPoint, e)].filter(
+              (point): point is number[] => point !== undefined
+            );
           } else {
             corners = (e.points ?? [])
-              .map(point => worldToIJK(point, e))
-              .filter((point): point is number[] => point !== undefined);
+              .map((point: any) => worldToIJK(point, e))
+              .filter((point: any): point is number[] => point !== undefined);
           }
 
           if (corners.length >= 2) {
-            const p0 = [0, 1, 2].map(axis => Math.min(...corners.map(point => point[axis])));
-            const p1 = [0, 1, 2].map(axis => Math.max(...corners.map(point => point[axis])));
+            const p0 = [0, 1, 2].map(axis =>
+              Math.min(...corners.map((point: number[]) => point[axis]))
+            );
+            const p1 = [0, 1, 2].map(axis =>
+              Math.max(...corners.map((point: number[]) => point[axis]))
+            );
             pos_boxes.push([p0, p1]);
           } else {
             console.warn('Ignoring RectangleROI2 prompt without valid coordinates', e.uid);
@@ -1502,7 +1524,7 @@ const commandsModule = ({
       }
 
       //Disable text prompts for SAM2
-      const text_prompts = []; //currentMeasurements
+      const text_prompts: any[] = []; //currentMeasurements
       //.filter(e => { return e.toolName === 'Probe2' && e.referenceSeriesUID === currentDisplaySets.SeriesInstanceUID && e.metadata.neg === false && e.metadata.SegmentNumber === segmentNumber; })
       //.map(e => { return e.label })
 
@@ -1548,6 +1570,7 @@ const commandsModule = ({
         pos_points: pos_points,
         neg_points: neg_points,
         pos_boxes: pos_boxes,
+        slice_sop_instance_uids: hasCompleteSliceUIDMap ? sliceSOPInstanceUIDs : [],
         texts: text_prompts,
         nninter: false,
         medsam2: medsam2,
@@ -1592,17 +1615,33 @@ const commandsModule = ({
           const { meta, seg } = await parseMultipart(response.data, ct);
           console.log(`Just after parseMultipart: ${(Date.now() - start) / 1000} Seconds`);
           //const arrayBuffer = response.data
-          const flipped = meta.flipped.toLowerCase() === 'true';
+          const flipped = meta.flipped === true || String(meta.flipped).toLowerCase() === 'true';
           const sam_elapsed = meta.sam_elapsed;
           const prompt_info = meta.prompt_info;
           const label_name = meta.label_name;
           const raw = seg;
           const new_arrayBuffer = new Uint8Array(raw);
-
           let imageIds = currentDisplaySets.imageIds;
+          if (!Array.isArray(imageIds) || imageIds.length === 0) {
+            throw new Error('SAM2 cannot apply a mask without source image IDs');
+          }
+          let maskLengthValidated = false;
+          const validateMaskLength = (sliceLength: number) => {
+            if (maskLengthValidated) {
+              return;
+            }
+            const expectedLength = imageIds.length * sliceLength;
+            if (new_arrayBuffer.length !== expectedLength) {
+              throw new Error(
+                `SAM2 mask size mismatch: received ${new_arrayBuffer.length} bytes, expected ${expectedLength} bytes for ${imageIds.length} source slices`
+              );
+            }
+            maskLengthValidated = true;
+          };
+
           let existingSegments: { [segmentIndex: string]: cstTypes.Segment } = {};
 
-          let segImageIds = [];
+          let segImageIds: string[] = [];
 
           let existing = false;
           // Find existing segmentation with matching seriesInstanceUid
@@ -1630,14 +1669,14 @@ const commandsModule = ({
             }
           }
 
-          let merged_derivedImages = [];
+          let merged_derivedImages: any[] = [];
           let z_range = [];
           if (overlap) {
             let derivedImages_new = await imageLoader.createAndCacheDerivedLabelmapImages(imageIds);
             console.log(
               `Just after createAndCacheDerivedLabelmapImages: ${(Date.now() - start) / 1000} Seconds`
             );
-            let derivedImages = [];
+            let derivedImages: any[] = [];
             if (segImageIds.length > 0) {
               derivedImages = segImageIds.map(imageId => cache.getImage(imageId));
             }
@@ -1648,12 +1687,13 @@ const commandsModule = ({
               const voxelManager = derivedImages_new[i]
                 .voxelManager as csTypes.IVoxelManager<number>;
               let scalarData = voxelManager.getScalarData();
+              validateMaskLength(scalarData.length);
               const sliceData = new_arrayBuffer.slice(
                 i * scalarData.length,
                 (i + 1) * scalarData.length
               );
-              if (sliceData.some(v => v === 1)) {
-                voxelManager.setScalarData(sliceData.map(v => (v === 1 ? segmentNumber : v)));
+              if (sliceData.some(v => v !== 0)) {
+                voxelManager.setScalarData(sliceData.map(v => (v !== 0 ? segmentNumber : v)));
                 z_range.push(i);
               }
             }
@@ -1707,12 +1747,13 @@ const commandsModule = ({
                 const voxelManager = derivedImages_new[i]
                   .voxelManager as csTypes.IVoxelManager<number>;
                 let scalarData = voxelManager.getScalarData();
+                validateMaskLength(scalarData.length);
                 const sliceData = new_arrayBuffer.slice(
                   i * scalarData.length,
                   (i + 1) * scalarData.length
                 );
-                if (sliceData.some(v => v === 1)) {
-                  voxelManager.setScalarData(sliceData.map(v => (v === 1 ? segmentNumber : v)));
+                if (sliceData.some(v => v !== 0)) {
+                  voxelManager.setScalarData(sliceData.map(v => (v !== 0 ? segmentNumber : v)));
                   if (flipped) {
                     z_range.push(derivedImages_new.length - i - 1);
                   } else {
@@ -1733,6 +1774,7 @@ const commandsModule = ({
                 const voxelManager = merged_derivedImages[i]
                   .voxelManager as csTypes.IVoxelManager<number>;
                 let scalarData = voxelManager.getScalarData();
+                validateMaskLength(scalarData.length);
                 const sliceData = new_arrayBuffer.slice(
                   i * scalarData.length,
                   (i + 1) * scalarData.length
@@ -1743,9 +1785,9 @@ const commandsModule = ({
                     scalarData = voxelManager.getScalarData();
                   }
                 }
-                if (sliceData.some(v => v === 1)) {
+                if (sliceData.some(v => v !== 0)) {
                   voxelManager.setScalarData(
-                    sliceData.map((v, idx) => (v === 1 ? segmentNumber : scalarData[idx]))
+                    sliceData.map((v, idx) => (v !== 0 ? segmentNumber : scalarData[idx]))
                   );
                   if (flipped) {
                     z_range.push(merged_derivedImages.length - i - 1);
@@ -2135,7 +2177,7 @@ const commandsModule = ({
               const srcRow = cropSliceBase + cy * _cropX;
               const dstRow = (_y0 + cy) * _fullX + _x0;
               for (let cx = 0; cx < _cropX; cx++) {
-                if (cropBytes[srcRow + cx] === 1) {
+                if (cropBytes[srcRow + cx] !== 0) {
                   sd[dstRow + cx] = segmentNumber;
                   wrote = true;
                 }
@@ -2988,12 +3030,22 @@ const commandsModule = ({
       const query = options?.query ?? '';
       const instruction = options?.instruction;
 
+      // Multi-agent run: the client generates the run id, then polls the live
+      // registry endpoint so the popup can show real events while this POST
+      // (which only settles at the end of the whole consultation) is in flight.
+      // Every OpenAI-compatible chat run streams through the orchestration
+      // engine — 'single' included, where it renders as a one-node graph.
+      const useMasOrchestrator = endpointType === 'openai-chat';
+      const masRunId = useMasOrchestrator
+        ? `mas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+        : undefined;
+
       const params: Record<string, unknown> = {
         largest_cc: false,
         result_extension: '.nii.gz',
         result_dtype: 'uint16',
         result_compress: false,
-        nninter: masStrategy === 'single' ? 'custom' : 'mas',
+        nninter: useMasOrchestrator ? 'mas' : 'custom',
         studyInstanceUID: currentDisplaySets?.StudyInstanceUID,
         texts: [query],
         instruction: instruction || undefined,
@@ -3003,11 +3055,42 @@ const commandsModule = ({
         custom_model: model,
         mas_strategy: masStrategy,
         mas_rounds: masStrategy === 'discussion' ? 2 : undefined,
+        mas_run_id: masRunId,
         startSlice: startSlice !== null && startSlice !== undefined ? startSlice : undefined,
         endSlice: endSlice !== null && endSlice !== undefined ? endSlice : undefined,
       };
 
       const data = MonaiLabelClient.constructFormData(params, null);
+
+      // Live polling: every tick pulls the events accumulated so far on the
+      // server and feeds them into toolboxState as an in-progress trace.
+      let masPollTimer: number | undefined;
+      const stopMasPoll = () => {
+        if (masPollTimer !== undefined) {
+          window.clearInterval(masPollTimer);
+          masPollTimer = undefined;
+        }
+      };
+      if (masRunId) {
+        masPollTimer = window.setInterval(async () => {
+          try {
+            const res = await fetch(`/monai/mas/runs/${masRunId}`);
+            if (!res.ok) {
+              // 404: the run is not registered yet — keep waiting.
+              return;
+            }
+            const snap = await res.json();
+            if (snap?.payload) {
+              toolboxState.setMasTrace(snap.payload);
+            }
+            if (snap?.status === 'done' || snap?.status === 'error') {
+              stopMasPoll();
+            }
+          } catch {
+            // Transient network error — the next tick retries.
+          }
+        }, 700);
+      }
 
       const customPromise = axios.post(url, data, {
         responseType: 'text',
@@ -3024,18 +3107,42 @@ const commandsModule = ({
         promiseMessages: {
           loading: 'Processing custom VLM request...',
           success: () => 'Custom VLM request - Successful',
-          error: error => `Custom VLM request - Failed: ${error.message || 'Unknown error'}`,
+          // Surface the backend's `detail` (which embeds the upstream error)
+          // next to the bare status code, e.g. 502 + the relay's 400 reason.
+          error: error => {
+            const detail =
+              error?.response?.data?.detail ??
+              (typeof error?.response?.data === 'string'
+                ? error.response.data.slice(0, 300)
+                : undefined);
+            const reason = detail ? ` ${String(detail).slice(0, 300)}` : '';
+            return `Custom VLM request - Failed: ${error.message || 'Unknown error'}${reason}`;
+          },
         },
       });
 
       try {
         const response = await customPromise;
         if (response.status === 200) {
+          // The MAS endpoint returns JSON: { answer, spec, trace, ... }.
+          // Parse whenever the body is JSON so the popup receives the final
+          // trace; plain-text bodies (direct custom path) pass through.
+          try {
+            const payload = JSON.parse(response.data);
+            if (payload && typeof payload === 'object' && 'answer' in payload) {
+              toolboxState.setMasTrace(payload);
+              return { data: payload?.answer ?? '' };
+            }
+          } catch {
+            // Non-JSON body (e.g. an upstream error detail) → treat as plain text.
+          }
           return response;
         }
       } catch (error) {
         console.error('Custom VLM error:', error);
         throw error;
+      } finally {
+        stopMasPoll();
       }
     },
     async nninter(textPrompts?: string | string[]) {
@@ -3224,7 +3331,7 @@ const commandsModule = ({
           } else {
             corners = (e.points ?? [])
               .map(point => promptWorldToIJK(point, e))
-              .filter((point): point is number[] => point !== undefined);
+              .filter((point: any): point is number[] => point !== undefined);
           }
 
           if (corners.length >= 2) {
@@ -3389,7 +3496,7 @@ const commandsModule = ({
             sBeginTs != null && sEndTs != null ? (sEndTs - sBeginTs) * 1000 : undefined;
           const responseInFlightMs = sEndTs != null ? afterPost - sEndTs * 1000 : undefined;
 
-          const flipped = meta.flipped.toLowerCase() === 'true';
+          const flipped = meta.flipped === true || String(meta.flipped).toLowerCase() === 'true';
           const nninter_elapsed = meta.nninter_elapsed;
           const prompt_info = meta.prompt_info;
           const label_name = meta.label_name;
@@ -3402,6 +3509,24 @@ const commandsModule = ({
           const predOffset: number[] = JSON.parse((meta as any).pred_offset || '[0,0,0]');
           const predFull: number[] = JSON.parse((meta as any).pred_full_shape || '[]');
           const predCrop: number[] = JSON.parse((meta as any).pred_crop_shape || '[]');
+          const predictionVoxelCount = cropBytes.reduce(
+            (count, value) => count + (value !== 0 ? 1 : 0),
+            0
+          );
+          const serverPredictionVoxelCount = Number((meta as any).pred_voxel_count);
+          if (predictionVoxelCount === 0) {
+            console.warn('Skipping empty nnInteractive segmentation', {
+              serverPredictionVoxelCount,
+              predCropShape: predCrop,
+            });
+            uiNotificationService.show({
+              title: 'MONAI Label',
+              message: '本次分割没有生成有效区域，请重新添加或调整提示点。',
+              type: 'warning',
+              duration: 5000,
+            });
+            return response;
+          }
 
           // Crop geometry (exposed to slice loops below)
           let _segZ0 = 0,
@@ -3446,14 +3571,14 @@ const commandsModule = ({
           const existingSegments = refreshedContext.existingSegments;
           const existing = refreshedContext.existing;
 
-          let merged_derivedImages = [];
+          let merged_derivedImages: any[] = [];
           let z_range = [];
           // Old block's imageIds when this is a refine — evicted from the cornerstone cache
           // AFTER the representation swap below, so the ~84MB fresh block minted each refine
           // doesn't accumulate (leak was ~+84MB/refine, inflating MPR remount + GC pauses).
           let _orphanedImageIds: string[] = [];
           if (overlap) {
-            let derivedImages = [];
+            let derivedImages: any[] = [];
             if (segImageIds.length > 0) {
               derivedImages = segImageIds.map(imageId => cache.getImage(imageId));
             }
@@ -3480,7 +3605,7 @@ const commandsModule = ({
                   const srcRow = cropSliceBase + cy * _cropX;
                   const dstRow = (_y0 + cy) * _fullX + _x0;
                   for (let cx = 0; cx < _cropX; cx++) {
-                    if (cropBytes[srcRow + cx] === 1) {
+                    if (cropBytes[srcRow + cx] !== 0) {
                       scalarData[dstRow + cx] = segmentNumber;
                       wrote = true;
                     }
@@ -3492,8 +3617,8 @@ const commandsModule = ({
                 const scalarData = voxelManager.getScalarData();
                 const sliceLen = scalarData.length;
                 const sliceData = new_arrayBuffer.slice(i * sliceLen, (i + 1) * sliceLen);
-                if (sliceData.some(v => v === 1)) {
-                  voxelManager.setScalarData(sliceData.map(v => (v === 1 ? segmentNumber : v)));
+                if (sliceData.some(v => v !== 0)) {
+                  voxelManager.setScalarData(sliceData.map(v => (v !== 0 ? segmentNumber : v)));
                   z_range.push(flipped ? derivedImages_new.length - i - 1 : i);
                 }
               }
@@ -3562,7 +3687,7 @@ const commandsModule = ({
                     const srcRow = cropSliceBase + cy * _cropX;
                     const dstRow = (_y0 + cy) * _fullX + _x0;
                     for (let cx = 0; cx < _cropX; cx++) {
-                      if (cropBytes[srcRow + cx] === 1) {
+                      if (cropBytes[srcRow + cx] !== 0) {
                         scalarData[dstRow + cx] = segmentNumber;
                         wrote = true;
                       }
@@ -3574,9 +3699,9 @@ const commandsModule = ({
                   const scalarData = voxelManager.getScalarData();
                   const sliceLen = scalarData.length;
                   const sliceData = new_arrayBuffer.subarray(i * sliceLen, (i + 1) * sliceLen);
-                  if (sliceData.some(v => v === 1)) {
+                  if (sliceData.some(v => v !== 0)) {
                     for (let j = 0; j < sliceLen; j++) {
-                      if (sliceData[j] === 1) scalarData[j] = segmentNumber;
+                      if (sliceData[j] !== 0) scalarData[j] = segmentNumber;
                     }
                     z_range.push(flipped ? derivedImages_new.length - i - 1 : i);
                   }
@@ -3655,7 +3780,7 @@ const commandsModule = ({
                     const srcRow = cropSliceBase + cy * _cropX;
                     const dstRow = (_y0 + cy) * _fullX + _x0;
                     for (let cx = 0; cx < _cropX; cx++) {
-                      if (cropBytes[srcRow + cx] === 1) {
+                      if (cropBytes[srcRow + cx] !== 0) {
                         scalarData[dstRow + cx] = segmentNumber;
                         wrote = true;
                       }
@@ -3669,9 +3794,9 @@ const commandsModule = ({
                     merged_derivedImages[i].voxelManager as csTypes.IVoxelManager<number>
                   ).getScalarData();
                   const sliceData = new_arrayBuffer.subarray(i * sd.length, (i + 1) * sd.length);
-                  if (sliceData.some(v => v === 1)) {
+                  if (sliceData.some(v => v !== 0)) {
                     for (let j = 0; j < sd.length; j++) {
-                      if (sliceData[j] === 1) sd[j] = segmentNumber;
+                      if (sliceData[j] !== 0) sd[j] = segmentNumber;
                     }
                     z_range.push(flipped ? merged_derivedImages.length - i - 1 : i);
                   }
@@ -3862,7 +3987,7 @@ const commandsModule = ({
         let instructionText = instruction;
         if (!instructionText?.trim()) {
           instructionText =
-            'You are an instructor teaching medical students. You are analyzing the following CT slices. Please review the slices provided below carefully.';
+            '你是一名指导医学生的教师，正在分析下面的 CT 影像。请仔细查看下方提供的影像并作答。请全程使用简体中文作答。';
         }
         toolboxState.setMedgemmaInstruction(instructionText.trim());
 
@@ -3890,6 +4015,7 @@ const commandsModule = ({
         }
 
         toolboxState.setMedgemmaResult(null);
+        toolboxState.setMasTrace(null);
 
         let response;
         if (vlm === 'gemini') {

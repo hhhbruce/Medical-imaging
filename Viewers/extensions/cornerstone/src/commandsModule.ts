@@ -30,10 +30,14 @@ import toggleImageSliceSync from './utils/imageSliceSync/toggleImageSliceSync';
 import { getFirstAnnotationSelected } from './utils/measurementServiceMappings/utils/selection';
 import getActiveViewportEnabledElement from './utils/getActiveViewportEnabledElement';
 import toggleVOISliceSync from './utils/toggleVOISliceSync';
+import { serializeVolumeForVR } from './utils/serializeVolumeForVR';
 import { usePositionPresentationStore, useSegmentationPresentationStore } from './stores';
 import { toolNames } from './initCornerstoneTools';
 import CornerstoneViewportDownloadForm from './utils/CornerstoneViewportDownloadForm';
-import { updateSegmentBidirectionalStats } from './utils/updateSegmentationStats';
+import {
+  getSegmentLargestBidirectionalForSegment,
+  updateSegmentBidirectionalStats,
+} from './utils/updateSegmentationStats';
 import { generateSegmentationCSVReport } from './utils/generateSegmentationCSVReport';
 import { getUpdatedViewportsForSegmentation } from './utils/hydrationUtils';
 
@@ -136,9 +140,9 @@ function commandsModule({
       const { segmentationId: targetId, segmentIndex: targetIndex } = targetSegmentation;
 
       // Get bidirectional measurement data
-      const bidirectionalData = await cstUtils.segmentation.getSegmentLargestBidirectional({
+      const bidirectionalData = await getSegmentLargestBidirectionalForSegment({
         segmentationId: targetId,
-        segmentIndices: [targetIndex],
+        segmentIndex: targetIndex,
       });
 
       if (!bidirectionalData?.length) {
@@ -264,7 +268,7 @@ function commandsModule({
     },
     updateStoredSegmentationPresentation: ({ displaySet, type }) => {
       const { addSegmentationPresentationItem, clearSegmentationPresentationStore } =
-      useSegmentationPresentationStore.getState();
+        useSegmentationPresentationStore.getState();
       //Focus the current SEG DisplaySet
       //Do not need to load previous segmentation presentation.
       //Clear all measurements before loading the current SEG DisplaySet
@@ -1134,6 +1138,132 @@ function commandsModule({
     },
 
     /**
+     * Serializes the current 3D volume rendering (volume data + transfer
+     * function + camera) and projects it into a new browser window. This is a
+     * minimal preview of the "project to browser" step before wiring up WebXR.
+     */
+    showVRPreview: ({ viewportId }) => {
+      const viewport = cornerstoneViewportService.getCornerstoneViewport(viewportId);
+      if (!viewport) {
+        return;
+      }
+
+      const payload = serializeVolumeForVR(viewport);
+      if (!payload) {
+        console.warn('[showVRPreview] unable to serialize volume from viewport', viewportId);
+        uiNotificationService.show({
+          title: 'VR 展示',
+          message: '当前视口没有可投影的 3D 体数据（请先在 CT 体渲染视口上点击此按钮）。',
+          type: 'error',
+        });
+        return;
+      }
+
+      const previewUrl = `${window.location.origin}/vr-preview.html`;
+      const previewWindow = window.open(previewUrl, '_blank');
+      if (!previewWindow) {
+        console.warn('[showVRPreview] popup blocked');
+        uiNotificationService.show({
+          title: 'VR 展示',
+          message:
+            '弹窗被浏览器拦截了。已改为向已打开的 vr-preview.html 标签页广播数据；也可手动打开该页面后重试。',
+          type: 'warning',
+        });
+      }
+
+      // BroadcastChannel fallback: a manually-opened vr-preview.html tab has no
+      // window reference for postMessage, so also broadcast the payload to any
+      // same-origin preview page listening on this channel.
+      let vrChannel: BroadcastChannel | null = null;
+      try {
+        vrChannel = new BroadcastChannel('vr-preview');
+      } catch (err) {
+        // BroadcastChannel unsupported; the popup path still works.
+      }
+      const broadcast = () => {
+        if (!vrChannel) {
+          return;
+        }
+        try {
+          vrChannel.postMessage({ type: 'vr-preview', payload });
+        } catch (err) {
+          console.error('[showVRPreview] failed to broadcast volume data', err);
+        }
+      };
+      // Deliver immediately for preview tabs that are already open.
+      broadcast();
+      // If a preview tab announces itself later, send it the volume then.
+      if (vrChannel) {
+        vrChannel.onmessage = event => {
+          if (event.data && event.data.type === 'vr-preview-ready') {
+            broadcast();
+          }
+        };
+      }
+
+      if (!previewWindow) {
+        // Nothing more to do for the popup path; the broadcast above covers
+        // manually-opened preview tabs.
+        return;
+      }
+
+      const send = () => {
+        if (previewWindow.closed) {
+          return;
+        }
+        try {
+          previewWindow.postMessage(
+            { type: 'vr-preview', payload },
+            window.location.origin
+          );
+        } catch (err) {
+          console.error('[showVRPreview] failed to post volume data', err);
+        }
+      };
+
+      // Send once the renderer has loaded, then retry briefly to tolerate a
+      // slow-loading listener in the preview window.
+      previewWindow.addEventListener('load', send);
+
+      // The preview window also posts an explicit `vr-preview-ready` signal once
+      // its message listener is registered. Answering that is the most reliable
+      // path, because the `load` event can fire before the (large, module-type)
+      // bundle has finished registering its listener.
+      const onReady = event => {
+        if (
+          event.source === previewWindow &&
+          event.data &&
+          event.data.type === 'vr-preview-ready'
+        ) {
+          send();
+        }
+      };
+      window.addEventListener('message', onReady);
+
+      let attempts = 0;
+      const retryTimer = window.setInterval(() => {
+        attempts += 1;
+        if (previewWindow.closed || attempts > 6) {
+          window.clearInterval(retryTimer);
+          window.removeEventListener('message', onReady);
+          return;
+        }
+        send();
+      }, 500);
+
+      // Keep the broadcast channel alive longer than the popup retries so a
+      // manually-opened preview tab that loads a few seconds later still gets
+      // the volume when it announces itself.
+      window.setTimeout(() => {
+        if (vrChannel) {
+          vrChannel.onmessage = null;
+          vrChannel.close();
+          vrChannel = null;
+        }
+      }, 15000);
+    },
+
+    /**
      * Sets the volume quality for a given viewport.
      * @param {string} viewportId - The ID of the viewport to set the volume quality.
      * @param {number} volumeQuality - The desired quality level of the volume rendering.
@@ -1351,10 +1481,7 @@ function commandsModule({
 
     toggleSegmentMeasurementCommand: ({ segmentationId, segmentIndex }) => {
       const { segmentationService } = servicesManager.services;
-      segmentationService.toggleSegmentMeasurement(
-        segmentationId,
-        segmentIndex
-      );
+      segmentationService.toggleSegmentMeasurement(segmentationId, segmentIndex);
     },
 
     /**
@@ -1387,9 +1514,10 @@ function commandsModule({
      * @param props.type - The type of representation (optional, defaults to Labelmap)
      */
     toggleSegmentationVisibilityAllViewportsCommand: ({ segmentationId, type }) => {
-      const { segmentationService, cornerstoneViewportService, viewportGridService } = servicesManager.services;
+      const { segmentationService, cornerstoneViewportService, viewportGridService } =
+        servicesManager.services;
       const viewportIds = cornerstoneViewportService.getViewportIds();
-      
+
       // If segmentationId is not provided, get the active segmentation
       let targetSegmentationId = segmentationId;
       if (!targetSegmentationId) {
@@ -1401,17 +1529,17 @@ function commandsModule({
         }
         targetSegmentationId = activeSegmentation.segmentationId;
       }
-      
+
       // Default to Labelmap if type is not provided
       const representationType = type || Enums.SegmentationRepresentations.Labelmap;
-      
+
       // Toggle visibility for all viewports
       for (let i = 0; i < viewportIds.length; i++) {
         const viewportId = viewportIds[i];
-        segmentationService.toggleSegmentationRepresentationVisibility(
-          viewportId,
-          { segmentationId: targetSegmentationId, type: representationType }
-        );
+        segmentationService.toggleSegmentationRepresentationVisibility(viewportId, {
+          segmentationId: targetSegmentationId,
+          type: representationType,
+        });
       }
     },
 
@@ -1444,13 +1572,13 @@ function commandsModule({
         segmentationService.remove(segmentationId);
         // update the segmentationId of the measurements fore newly created segmentation
         measurementService
-        .getMeasurements()
-        .filter(measurement => {
-          return measurement.metadata.segmentationId === segmentationId;
-        })
-        .forEach(measurement => {
-          measurement.metadata.segmentationId = displaySetInstanceUIDs[0];
-        });
+          .getMeasurements()
+          .filter(measurement => {
+            return measurement.metadata.segmentationId === segmentationId;
+          })
+          .forEach(measurement => {
+            measurement.metadata.segmentationId = displaySetInstanceUIDs[0];
+          });
         viewportGridService.setDisplaySetsForViewport({
           viewportId: viewportGridService.getActiveViewportId(),
           displaySetInstanceUIDs,
@@ -1504,8 +1632,8 @@ function commandsModule({
      */
     removeSegmentationFromViewportCommand: ({ segmentationId }) => {
       const { segmentationService, viewportGridService } = servicesManager.services;
-        // Clear all measurements before removing a segmentation
-       commandsManager.runCommand('resetNninter', { clearMeasurements: true });
+      // Clear all measurements before removing a segmentation
+      commandsManager.runCommand('resetNninter', { clearMeasurements: true });
       segmentationService.removeSegmentationRepresentations(
         viewportGridService.getActiveViewportId(),
         { segmentationId }
@@ -2015,6 +2143,9 @@ function commandsModule({
     },
     setViewportPreset: {
       commandFn: actions.setViewportPreset,
+    },
+    showVRPreview: {
+      commandFn: actions.showVRPreview,
     },
     setVolumeRenderingQulaity: {
       commandFn: actions.setVolumeRenderingQulaity,

@@ -25,7 +25,10 @@ import {
   type MedgemmaVariantId,
   type CustomEndpointType,
   type CustomMasStrategy,
+  type MasTracePayload,
 } from '../stores/toolboxState';
+import { AgentFlowVizModal } from './AgentFlowViz';
+import { MarkdownText } from './MarkdownText';
 import {
   fetchInteractiveModels,
   getInteractiveModelDisplayName,
@@ -97,6 +100,17 @@ export function Toolbox({
   const modelSwitchRequestRef = useRef(0);
   const modelSwitchPendingRef = useRef(false);
   const [medgemmaResult, setMedgemmaResult] = useState(toolboxState.getMedgemmaResult());
+  const [masTrace, setMasTrace] = useState<MasTracePayload | null>(toolboxState.getMasTrace());
+  // Multi-agent consultation data-flow popup (弹窗): opens the moment 运行 is
+  // clicked; live events then stream into it while the run is in progress.
+  const [masFlowOpen, setMasFlowOpen] = useState(false);
+  const [masRunPending, setMasRunPending] = useState(false);
+  // Mirror of masFlowOpen for the toolboxState polling interval below (whose
+  // closure would otherwise read a stale popup state).
+  const masFlowOpenRef = useRef(false);
+  useEffect(() => {
+    masFlowOpenRef.current = masFlowOpen;
+  }, [masFlowOpen]);
   const [medgemmaInstruction, setMedgemmaInstruction] = useState(
     toolboxState.getMedgemmaInstruction()
   );
@@ -274,6 +288,7 @@ export function Toolbox({
         const cmodel = toolboxState.getCustomModel();
         const cms = toolboxState.getCustomMasStrategy();
         const cmodels = toolboxState.getCustomModels();
+        const mt = toolboxState.getMasTrace();
         setMedgemmaResult(result);
         setMedgemmaInstruction(instruction);
         setMedgemmaQuery(query);
@@ -303,6 +318,17 @@ export function Toolbox({
         setCustomModel(cmodel);
         setCustomMasStrategy(cms);
         setCustomModels(cmodels);
+        setMasTrace(mt);
+        // A run that settled without a data-flow trace (an error, or a
+        // provider that does not stream MAS events) closes the popup so it
+        // never hangs on the waiting screen; the result shows in the panel.
+        if (result && !mt && masFlowOpenRef.current) {
+          setMasFlowOpen(false);
+        }
+        // Any settled result (final answer or error text) ends the pending
+        // hint AND the live streaming mode. Functional update avoids reading
+        // stale state from the interval closure.
+        setMasRunPending(pending => (result ? false : pending));
       }, 100); // Check every 100ms for updates
       return () => clearInterval(interval);
     }
@@ -612,7 +638,8 @@ export function Toolbox({
   const shouldCollapse = isAIToolBox && isLocked;
 
   return (
-    <PanelSection
+    <>
+      <PanelSection
       key={isAIToolBox ? `toolbox-${isLocked}` : buttonSectionId}
       defaultOpen={defaultOpen && !shouldCollapse}
       className="border-border/80 bg-card/80 mx-2 mb-2 rounded-lg border shadow-[0_2px_8px_rgba(0,0,0,0.16)] first:mt-2"
@@ -1438,6 +1465,18 @@ export function Toolbox({
                               <SelectItem value="discussion">Discussion 多轮讨论</SelectItem>
                               <SelectItem value="clinical-panel">临床专家小组</SelectItem>
                               <SelectItem value="triage-panel">急诊分诊小组</SelectItem>
+                              <SelectItem value="expert-panel">专家会诊（ExpertPanel）</SelectItem>
+                              <SelectItem value="debate">Debate 多智能体辩论</SelectItem>
+                              <SelectItem value="mdagents">MDAgents 自适应分层会诊</SelectItem>
+                              <SelectItem value="mdteamgpt">MDTeamGPT 多学科团队（MDT）</SelectItem>
+                              <SelectItem value="reconcile">ReConcile 多视角调和</SelectItem>
+                              <SelectItem value="metaprompting">MetaPrompting 元提示编排</SelectItem>
+                              <SelectItem value="autogen">AutoGen 代理对话</SelectItem>
+                              <SelectItem value="dylan">DyLAN 动态分层网络</SelectItem>
+                              <SelectItem value="medagents">MedAgents 专家分析与验证</SelectItem>
+                              <SelectItem value="colacare">ColaCare 多学科协作推荐</SelectItem>
+                              <SelectItem value="sc">SC 自一致性投票</SelectItem>
+                              <SelectItem value="cot">CoT 思维链</SelectItem>
                             </SelectContent>
                           </Select>
                           <p className="text-muted-foreground text-xs">
@@ -1567,6 +1606,11 @@ export function Toolbox({
                       variant="default"
                       size="sm"
                       onClick={() => {
+                        setMasRunPending(true);
+                        // Pop the data-flow window the moment 运行 is clicked:
+                        // live events stream into it while the consultation
+                        // runs, and the waiting screen resolves on settle.
+                        setMasFlowOpen(true);
                         commandsManager?.run('testVlm', {
                           vlmProvider,
                           instruction: medgemmaInstruction,
@@ -1611,13 +1655,42 @@ export function Toolbox({
                         请先点击「获取模型列表」并选择一个模型后再运行。
                       </p>
                     )}
-                    {medgemmaResult && (
+                    {masRunPending && !masTrace && (
+                      <p className="text-muted-foreground text-xs">
+                        智能体会诊进行中…数据流弹窗正在实时接收各科医生的意见。
+                      </p>
+                    )}
+                    {masTrace && (
+                      <div className="border-border bg-accent/30 mt-2 flex flex-col gap-2 rounded-md border p-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="bg-primary inline-block h-2.5 w-2.5" />
+                            <span className="text-sm font-semibold">会诊数据流</span>
+                            <span className="text-muted-foreground text-xs">
+                              {masTrace.spec?.name ?? masTrace.strategy}
+                              {masTrace.strategy_label ? ` · ${masTrace.strategy_label}` : ''}
+                              {` · ${masTrace.agent_count ?? 0} 位医生`}
+                            </span>
+                          </div>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full"
+                          onClick={() => setMasFlowOpen(true)}
+                        >
+                          查看数据流弹窗
+                        </Button>
+                      </div>
+                    )}
+                    {!masTrace && medgemmaResult && (
                       <div className="mt-2 flex flex-col gap-2">
                         <Label className="text-sm font-semibold">结果：</Label>
                         <div className="bg-accent/40 border-border max-h-[300px] overflow-y-auto rounded-md border p-3">
-                          <pre className="text-foreground whitespace-pre-wrap break-words text-sm">
-                            {medgemmaResult}
-                          </pre>
+                          <MarkdownText
+                            text={medgemmaResult ?? ''}
+                            className="text-foreground text-sm"
+                          />
                         </div>
                       </div>
                     )}
@@ -1637,5 +1710,14 @@ export function Toolbox({
         </PanelSection.Content>
       )}
     </PanelSection>
+      {isTestMedgemmaToolbox && (
+        <AgentFlowVizModal
+          trace={masTrace}
+          open={masFlowOpen}
+          live={masRunPending}
+          onClose={() => setMasFlowOpen(false)}
+        />
+      )}
+    </>
   );
 }

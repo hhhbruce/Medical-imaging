@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>临床会诊数据流 · 演示（NVIDIA）</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --primary: #76b900;        /* NVIDIA Green */
+    --primary-dark: #5a8d00;
+    --on-primary: #000000;
+    --canvas: #ffffff;
+    --surface-dark: #000000;
+    --surface-elevated: #1a1a1a;
+    --surface-soft: #f7f7f7;
+    --hairline: #cccccc;
+    --hairline-strong: #5e5e5e;
+    --ink: #000000;
+    --body: #1a1a1a;
+    --mute: #757575;
+    --stone: #898989;
+    --ash: #a7a7a7;
+    --on-dark: #ffffff;
+    --on-dark-mute: rgba(255,255,255,0.7);
+    --success-deep: #3f8500;
+    --warning: #df6500;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Inter", Arial, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+    background: var(--surface-dark);
+    color: var(--ink);
+    min-height: 100vh;
+    padding: 24px;
+  }
+  .stage { max-width: 720px; margin: 0 auto; }
+
+  /* Switcher — pill tabs on dark */
+  .switcher { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .switcher button {
+    background: transparent; color: var(--on-dark);
+    border: 1px solid var(--on-dark); border-radius: 2px;
+    padding: 9px 16px; font-size: 13px; font-weight: 700; cursor: pointer;
+    line-height: 1; transition: all .15s; font-family: inherit;
+  }
+  .switcher button:hover { border-color: var(--primary); color: var(--primary); }
+  .switcher button.active { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+
+  .monitor {
+    background: var(--canvas);
+    border: 1px solid var(--hairline);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .head { background: var(--surface-dark); padding: 14px 16px 12px; }
+  .head-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .title-wrap { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .dot { width: 12px; height: 12px; background: var(--primary); flex: 0 0 auto; }
+  .title { color: var(--on-dark); font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ctrls { display: flex; gap: 8px; align-items: center; }
+  .ctrls button {
+    border-radius: 2px; font-weight: 700; font-size: 13px; line-height: 1; cursor: pointer; font-family: inherit;
+  }
+  .ctrls button.primary { background: var(--primary); color: var(--on-primary); border: 1px solid var(--primary); padding: 8px 18px; }
+  .ctrls button.ghost { background: transparent; color: var(--on-dark); border: 1px solid var(--on-dark); padding: 8px 12px; }
+  .ctrls button:disabled { opacity: .35; cursor: default; }
+  .progress { height: 3px; background: var(--surface-elevated); margin-top: 10px; border-radius: 2px; }
+  .progress > div { height: 100%; background: var(--primary); border-radius: 2px; transition: width .25s ease; }
+
+  .stats {
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    border-bottom: 1px solid var(--hairline); background: var(--canvas);
+  }
+  .stat { text-align: center; padding: 10px 4px; border-right: 1px solid var(--hairline); }
+  .stat:last-child { border-right: none; }
+  .stat .k { color: var(--mute); font-size: 10px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; }
+  .stat .v { font-weight: 700; font-size: 20px; line-height: 1.2; margin-top: 2px; font-variant-numeric: tabular-nums; }
+
+  .graph { padding: 12px; overflow-x: auto; background: var(--canvas); }
+  .graph svg { display: block; margin: 0 auto; }
+
+  .transcript { border-top: 1px solid var(--hairline); padding: 12px; }
+  .transcript .t-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .transcript .t-head .l { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 12px; font-weight: 700; }
+  .transcript .t-head .l .sq { width: 8px; height: 8px; background: var(--primary); flex: 0 0 auto; }
+  .transcript .t-head .r { color: var(--mute); font-size: 11px; }
+  .msgs { max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+  .msg { background: var(--canvas); border: 1px solid var(--hairline); border-left: 3px solid var(--ink); border-radius: 2px; padding: 8px 10px; }
+  .msg .m-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .msg .name { font-size: 12.5px; font-weight: 700; color: var(--ink); }
+  .msg .badge { color: var(--body); font-size: 9.5px; font-weight: 700; letter-spacing: .4px; border: 1px solid var(--hairline); border-radius: 2px; padding: 1px 6px; }
+  .msg .round { color: var(--mute); font-size: 9.5px; border: 1px solid var(--hairline); border-radius: 2px; padding: 1px 6px; }
+  .msg .tok { margin-left: auto; color: var(--mute); font-size: 9.5px; font-variant-numeric: tabular-nums; }
+  .msg .body { color: var(--body); font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto; }
+
+  .final { background: var(--surface-dark); padding: 14px 16px; }
+  .final .row { display: flex; gap: 10px; align-items: flex-start; }
+  .final .sq { width: 10px; height: 10px; background: var(--primary); flex: 0 0 auto; margin-top: 3px; }
+  .final .tag { color: var(--primary); font-weight: 700; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; margin-bottom: 4px; }
+  .final .txt { color: var(--on-dark); font-size: 12.5px; line-height: 1.65; }
+  .final .txt.muted { color: var(--on-dark-mute); }
+  .hint { color: var(--mute); font-size: 11.5px; padding: 4px 0; }
+
+  @keyframes flowdash { to { stroke-dashoffset: -16; } }
+  @keyframes pulse { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: .35; } }
+  .flow { stroke-dasharray: 5 6; animation: flowdash .7s linear infinite; }
+  .pulse { animation: pulse 1.1s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="switcher" id="switcher"></div>
+  <div class="monitor">
+    <div class="head">
+      <div class="head-row">
+        <div class="title-wrap">
+          <span class="dot"></span>
+          <span class="title" id="title"></span>
+        </div>
+        <div class="ctrls">
+          <button class="primary" id="playBtn">播放</button>
+          <button class="ghost" id="resetBtn">重置</button>
+          <button class="ghost" id="prevBtn">◀</button>
+          <button class="ghost" id="nextBtn">▶</button>
+        </div>
+      </div>
+      <div class="progress"><div id="prog"></div></div>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="k">医生</div><div class="v" id="stAgents"></div></div>
+      <div class="stat"><div class="k">轮次</div><div class="v" id="stRounds"></div></div>
+      <div class="stat"><div class="k">调用</div><div class="v" id="stCalls"></div></div>
+      <div class="stat"><div class="k">Token</div><div class="v" id="stTokens"></div></div>
+      <div class="stat"><div class="k">步骤</div><div class="v" id="stStep" style="color:var(--primary)"></div></div>
+    </div>
+
+    <div class="graph" id="graph"></div>
+    <div class="transcript">
+      <div class="t-head">
+        <span class="l"><span class="sq"></span>会诊记录 · 真实数据流动</span>
+        <span class="r" id="msgCount"></span>
+      </div>
+      <div class="msgs" id="msgs"></div>
+    </div>
+    <div class="final">
+      <div class="row">
+        <span class="sq"></span>
+        <div>
+          <div class="tag">最终结论</div>
+          <div class="txt" id="finalTxt"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------------- 颜色（NVIDIA） ---------------- */
+const KIND_COLOR = {
+  io: '#a7a7a7', agent: '#76b900', router: '#000000',
+  aggregator: '#3f8500', evaluator: '#df6500', blackboard: '#898989'
+};
+const KIND_LABEL = { io:'输入/输出', agent:'医生', router:'分诊', aggregator:'汇总', evaluator:'收敛', blackboard:'黑板' };
+
+function colorOf(node) { return KIND_COLOR[node.kind] || '#a7a7a7'; }
+
+/* ---------------- 模拟数据 ---------------- */
+const DEMOS = {
+  'clinical-panel': {
+    label: '临床专家小组', name: 'ClinicalPanel', agents: 5, rounds: 1, calls: 5,
+    spec: {
+      name: 'ClinicalPanel', entry: 'in', exit: 'out', max_rounds: 1,
+      nodes: [
+        { id:'in', name:'影像输入', kind:'io' },
+        { id:'d1', name:'全科医生', kind:'agent' },
+        { id:'d2', name:'急诊重症医生', kind:'agent' },
+        { id:'d3', name:'放射科医生', kind:'agent' },
+        { id:'d4', name:'临床药师', kind:'agent' },
+        { id:'chief', name:'首席评审', kind:'aggregator' },
+        { id:'out', name:'结论', kind:'io' },
+      ],
+      edges: [
+        { src:'in', dst:'d1' }, { src:'in', dst:'d2' }, { src:'in', dst:'d3' }, { src:'in', dst:'d4' },
+        { src:'d1', dst:'chief' }, { src:'d2', dst:'chief' }, { src:'d3', dst:'chief' }, { src:'d4', dst:'chief' },
+        { src:'chief', dst:'out' },
+      ]
+    },
+    final_answer: '患者中年男性，急性胸痛伴大汗，心电图提示前壁导联 ST 段抬高，肌钙蛋白显著升高，高度怀疑急性前壁心肌梗死（STEMI）。应立即启动胸痛中心绿色通道：双联抗血小板、抗凝，若导管室可及则首选急诊 PCI；期间持续心电监护，警惕恶性心律失常与心源性休克。本意见为决策支持，不可替代现场心内科医生的即时处置。',
+    steps: [
+      { node:'d1', round:0, pt:120, ct:310, content:'【全科医生】患者为 52 岁男性，急性起病，主诉压榨性胸痛向左肩放射，伴大汗、恶心，持续 30 分钟未缓解。既往高血压、吸烟史。生命体征：BP 150/95，HR 102。鉴别诊断需首先排除急性冠脉综合征（ACS），其次考虑主动脉夹层、肺栓塞、气胸。建议立即行 18 导联心电图与心肌酶谱，同时建立静脉通路、吸氧、心电监护。' },
+      { node:'d2', round:0, pt:130, ct:340, content:'【急诊重症医生】这是高度时间敏感病例。胸痛持续 >20 分钟且伴大汗，属 ACS 高危。请立即进入抢救流程：监测、双联抗血小板（阿司匹林 300mg + P2Y12 抑制剂）、抗凝，10 分钟内完成心电图判读。若为 STEMI，门-球时间应 <90 分钟；需同时排除主动脉夹层（双侧血压、必要时增强 CT），否则抗栓会带来致命风险。' },
+      { node:'d3', round:0, pt:140, ct:360, content:'【放射科医生】影像提示前壁导联 ST 段抬高、T 波高尖，未见明显病理性 Q 波，符合超急性期 STEMI 表现。建议尽快行急诊冠脉造影明确罪犯血管；若患者条件允许，可先做床旁胸片排除气胸与纵隔增宽。需注意夹层累及冠脉开口时心电图可完全模仿 STEMI，鉴别要点在于双侧血压与胸痛是否撕裂样。' },
+      { node:'d4', round:0, pt:110, ct:300, content:'【临床药师】用药建议：负荷量阿司匹林 300mg 嚼服，替格瑞洛 180mg 或氯吡格雷 300–600mg（视出血与手术风险选择）；抗凝可用普通肝素，按体重调整并监测 APTT。合并肾功能不全时注意剂量。若有溶栓指征，请核对禁忌证（近期手术、出血史、颅内占位等）。同时评估与他汀、β 受体阻滞剂联用的血压耐受。' },
+      { node:'chief', round:0, pt:200, ct:520, content:'【首席评审】综合四位意见：一致指向急性前壁 STEMI，唯一需即刻排除的是主动脉夹层（因抗栓决策完全相反）。处置优先级：① 持续监护与绿色通道；② 双联抗血小板 + 抗凝；③ 尽快再灌注（急诊 PCI 优先，不可及则评估溶栓）；④ 排除夹层后按 STEMI 路径管理。安全声明：此为决策支持，须由现场医生最终定夺。' },
+    ]
+  },
+
+  'discussion': {
+    label: 'Discussion 多轮讨论', name: 'Discussion', agents: 6, rounds: 2, calls: 12,
+    spec: {
+      name: 'Discussion', entry: 'in', exit: 'out', max_rounds: 2,
+      nodes: [
+        { id:'in', name:'影像输入', kind:'io' },
+        { id:'d1', name:'全科医生', kind:'agent' },
+        { id:'d2', name:'急诊重症医生', kind:'agent' },
+        { id:'d3', name:'放射科医生', kind:'agent' },
+        { id:'d4', name:'临床药师', kind:'agent' },
+        { id:'gate', name:'会诊收敛门', kind:'evaluator' },
+        { id:'lead', name:'主诊医生', kind:'aggregator' },
+        { id:'out', name:'结论', kind:'io' },
+      ],
+      edges: [
+        { src:'in', dst:'d1' }, { src:'in', dst:'d2' }, { src:'in', dst:'d3' }, { src:'in', dst:'d4' },
+        { src:'d1', dst:'gate' }, { src:'d2', dst:'gate' }, { src:'d3', dst:'gate' }, { src:'d4', dst:'gate' },
+        { src:'gate', dst:'d1', loop:true }, { src:'gate', dst:'d2', loop:true },
+        { src:'gate', dst:'d3', loop:true }, { src:'gate', dst:'d4', loop:true },
+        { src:'d1', dst:'lead' }, { src:'d2', dst:'lead' }, { src:'d3', dst:'lead' }, { src:'d4', dst:'lead' },
+        { src:'lead', dst:'out' },
+      ]
+    },
+    final_answer: '第 2 轮讨论后意见趋于一致：右下肺磨玻璃样结节，边缘毛糙、可见分叶，结合 45 岁女性无吸烟史但家族有肺癌史，建议 3 个月随访复查或直接行 HRCT 薄层 + 结节三维评估；若持续增大或实性成分增多，考虑穿刺活检。当前无需立即手术。',
+    steps: [
+      { node:'d1', round:0, pt:120, ct:280, content:'【全科医生 · 第1轮】右下肺约 1.1cm 磨玻璃结节，边界欠清。患者无发热咳嗽，肿瘤标志物未查。建议先结合 HRCT 与既往片对比，评估倍增时间；同时完善血常规、CRP 排除感染性病变。' },
+      { node:'d2', round:0, pt:115, ct:260, content:'【急诊重症医生 · 第1轮】无急性症状，非急诊。但磨玻璃结节若为恶性，多为惰性腺癌，进展缓慢，短期风险低。无需急诊处理，转入门诊随访路径。' },
+      { node:'d3', round:0, pt:150, ct:360, content:'【放射科医生 · 第1轮】结节呈混合磨玻璃，内部有少量实性成分，边缘分叶、胸膜牵拉。Lung-RADS 分类约 3–4。影像特征偏向早期腺癌（AAH/AIS/MIA 谱系），但炎性假瘤不能完全除外，需随访或进一步评估。' },
+      { node:'d4', round:0, pt:100, ct:230, content:'【临床药师 · 第1轮】当前无需用药。若后续为感染，经验性抗生素需结合患者过敏史；若需增强 CT，请确认肾功能，避免造影剂肾损伤。' },
+      { node:'gate', round:0, pt:60, ct:120, content:'【收敛门】尚未完全一致：放射科倾向恶性、全科建议先排除感染，处理路径（随访 vs 立即活检）存在分歧。进入第 2 轮，请各科参考彼此意见修正。' },
+      { node:'d1', round:1, pt:130, ct:300, content:'【全科医生 · 第2轮】同意放射科判断，肺窗细节更可信。补充家族史：其父曾患肺腺癌。修正为高风险，建议 3 个月复查或直接肺结节专科会诊。' },
+      { node:'d2', round:1, pt:110, ct:250, content:'【急诊重症医生 · 第2轮】维持判断：非急诊，但支持尽早明确性质，避免延误。建议门诊 HRCT 薄层 + 随访计划。' },
+      { node:'d3', round:1, pt:140, ct:330, content:'【放射科医生 · 第2轮】坚持原判断，建议 3 个月 HRCT 随访；若实性成分增多或直径 >1.5cm，再行穿刺。可先不手术。' },
+      { node:'d4', round:1, pt:95, ct:220, content:'【临床药师 · 第2轮】维持建议：目前无需用药，随访即可。' },
+      { node:'gate', round:1, pt:60, ct:100, content:'【收敛门】已收敛：各科同意“3 个月 HRCT 随访、暂不手术、无需用药”的一致意见。' },
+      { node:'lead', round:1, pt:180, ct:460, content:'【主诊医生】达成一致：右下肺混合磨玻璃结节，倾向早期腺癌谱系，风险中等。处置：3 个月 HRCT 薄层随访，必要时结节三维评估；暂不手术、无需用药；戒烟宣教。安全声明：决策支持，请肺结节专科最终确认。' },
+    ]
+  },
+
+  'triage-panel': {
+    label: '急诊分诊小组', name: 'TriagePanel', agents: 4, rounds: 1, calls: 4,
+    spec: {
+      name: 'TriagePanel', entry: 'in', exit: 'out', max_rounds: 1,
+      nodes: [
+        { id:'in', name:'影像输入', kind:'io' },
+        { id:'t1', name:'急诊重症医生', kind:'agent' },
+        { id:'t2', name:'放射科医生', kind:'agent' },
+        { id:'t3', name:'专科医生', kind:'agent' },
+        { id:'lead', name:'分诊组长', kind:'aggregator' },
+        { id:'out', name:'结论', kind:'io' },
+      ],
+      edges: [
+        { src:'in', dst:'t1' }, { src:'in', dst:'t2' }, { src:'in', dst:'t3' },
+        { src:'t1', dst:'lead' }, { src:'t2', dst:'lead' }, { src:'t3', dst:'lead' },
+        { src:'lead', dst:'out' },
+      ]
+    },
+    final_answer: '患者头晕伴右侧肢体无力，发病 2 小时内，NIHSS 约 6 分，影像未见出血。分诊结论：高度怀疑急性缺血性脑卒中，立即进入卒中绿色通道，尽快评估静脉溶栓（4.5 小时时间窗内）与血管内取栓的适应证。',
+    steps: [
+      { node:'t1', round:0, pt:120, ct:300, content:'【急诊重症医生】突发言语含糊 + 右侧肢体无力 1.5 小时，符合 FAST 阳性。立即呼叫卒中团队，测血糖排除低血糖，行急诊头颅 CT 排除出血，记录“最后正常时间”。' },
+      { node:'t2', round:0, pt:140, ct:340, content:'【放射科医生】头颅 CT 平扫未见出血，可见左侧基底节区早期低密度征，提示缺血。建议 CTA 评估大血管闭塞（若 MCA 闭塞可行取栓）。' },
+      { node:'t3', round:0, pt:130, ct:320, content:'【专科医生】考虑急性缺血性脑卒中。4.5 小时内可溶栓，大血管闭塞 6 小时内可考虑取栓。需核对禁忌证：近期手术、抗凝史、血压 >185/110。' },
+      { node:'lead', round:0, pt:180, ct:440, content:'【分诊组长】综合：急性缺血性脑卒中高度可能，NIHSS≈6。立即绿色通道：控制血压达标后评估静脉溶栓；同期 CTA 判断大血管闭塞决定是否桥接取栓。安全声明：需卒中医生现场最终决策。' },
+    ]
+  },
+
+  'expert-panel': {
+    label: '专家会诊（ExpertPanel）', name: 'ExpertPanel', agents: 8, rounds: 1, calls: 2,
+    spec: {
+      name: 'ExpertPanel', entry: 'in', exit: 'out', max_rounds: 4,
+      nodes: [
+        { id:'in', name:'影像输入', kind:'io' },
+        { id:'router', name:'难度分诊', kind:'router' },
+        { id:'solo', name:'全科专家', kind:'agent' },
+        { id:'recruiter', name:'招募者', kind:'agent' },
+        { id:'e1', name:'专科专家1', kind:'agent' },
+        { id:'e2', name:'专科专家2', kind:'agent' },
+        { id:'e3', name:'专科专家3', kind:'agent' },
+        { id:'gate', name:'共识门', kind:'evaluator' },
+        { id:'moderator', name:'主持人', kind:'aggregator' },
+        { id:'out', name:'结论', kind:'io' },
+      ],
+      edges: [
+        { src:'in', dst:'router' },
+        { src:'router', dst:'solo' }, { src:'router', dst:'recruiter' },
+        { src:'solo', dst:'out' },
+        { src:'recruiter', dst:'e1' }, { src:'recruiter', dst:'e2' }, { src:'recruiter', dst:'e3' },
+        { src:'e1', dst:'gate' }, { src:'e2', dst:'gate' }, { src:'e3', dst:'gate' },
+        { src:'e1', dst:'moderator' }, { src:'e2', dst:'moderator' }, { src:'e3', dst:'moderator' },
+        { src:'gate', dst:'e1', loop:true }, { src:'gate', dst:'e2', loop:true }, { src:'gate', dst:'e3', loop:true },
+        { src:'moderator', dst:'out' },
+      ]
+    },
+    final_answer: '本例为常规问题，难度分诊判定单专家即可回答。结论：考虑社区获得性肺炎，建议完善血常规、CRP 与胸部 CT，经验性抗生素治疗并门诊随访。',
+    steps: [
+      { node:'router', round:0, pt:50, ct:90, content:'【难度分诊】问题常规、影像明确，复杂度低 → 路由到「solo」。' },
+      { node:'solo', round:0, pt:140, ct:360, content:'【全科专家】右下肺斑片状渗出影，伴发热、咳嗽、白细胞升高，符合社区获得性肺炎。建议门诊口服抗生素（阿莫西林/克拉维酸或呼吸喹诺酮类），72 小时评估疗效；若加重或低氧需住院。' },
+    ]
+  }
+};
+
+/* ---------------- 图布局 ---------------- */
+const NODE_W = 116, NODE_H = 46, GAP_X = 24, GAP_Y = 66, PAD = 16;
+
+function computeLayout(spec) {
+  const succ = new Map();
+  for (const e of spec.edges) {
+    const l = succ.get(e.src) || []; l.push(e.dst); succ.set(e.src, l);
+  }
+  const level = new Map([[spec.entry, 0]]);
+  const q = [spec.entry], seen = new Set([spec.entry]);
+  while (q.length) {
+    const u = q.shift();
+    for (const v of succ.get(u) || []) {
+      if (!seen.has(v)) { seen.add(v); level.set(v, (level.get(u) || 0) + 1); q.push(v); }
+    }
+  }
+  for (const n of spec.nodes) if (!level.has(n.id)) level.set(n.id, 0);
+  const byLevel = new Map();
+  for (const n of spec.nodes) {
+    const lv = level.get(n.id) || 0;
+    const l = byLevel.get(lv) || []; l.push(n.id); byLevel.set(lv, l);
+  }
+  const pos = new Map();
+  for (const lv of [...byLevel.keys()].sort((a,b)=>a-b)) {
+    (byLevel.get(lv) || []).forEach((id, i) => pos.set(id, { x: i*(NODE_W+GAP_X), y: lv*(NODE_H+GAP_Y), level: lv }));
+  }
+  return pos;
+}
+
+function edgePath(src, dst, pos) {
+  const a = pos.get(src), b = pos.get(dst);
+  if (!a || !b) return '';
+  if (a.level < b.level) {
+    const x1 = a.x + NODE_W/2, y1 = a.y + NODE_H, x2 = b.x + NODE_W/2, y2 = b.y;
+    return `M ${x1} ${y1} C ${x1} ${(y1+y2)/2}, ${x2} ${(y1+y2)/2}, ${x2} ${y2}`;
+  }
+  const x1 = a.x + NODE_W, y1 = a.y + NODE_H/2, x2 = b.x + NODE_W, y2 = b.y + NODE_H/2, dx = 36;
+  return `M ${x1} ${y1} C ${x1+dx} ${y1}, ${x2+dx} ${y2}, ${x2} ${y2}`;
+}
+
+/* ---------------- 状态与渲染 ---------------- */
+const NS = 'http://www.w3.org/2000/svg';
+let current = 'clinical-panel';
+let step = -1, playing = false, timer = null;
+
+const $ = id => document.getElementById(id);
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(NS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+
+function renderSwitcher() {
+  const sw = $('switcher'); sw.innerHTML = '';
+  for (const key in DEMOS) {
+    const b = document.createElement('button');
+    b.textContent = DEMOS[key].label;
+    b.className = key === current ? 'active' : '';
+    b.onclick = () => { current = key; load(); };
+    sw.appendChild(b);
+  }
+}
+
+function renderGraph(demo) {
+  const pos = computeLayout(demo.spec);
+  const width = Math.max(...[...pos.values()].map(p => p.x + NODE_W)) + PAD*2;
+  const height = Math.max(...[...pos.values()].map(p => p.y + NODE_H)) + PAD*2;
+
+  const svg = el('svg', { viewBox: `0 0 ${width} ${height}`, width, height });
+  const defs = el('defs', {});
+  const mk = (id, color) => {
+    const m = el('marker', { id, markerWidth: 8, markerHeight: 8, refX: 7, refY: 3, orient: 'auto', markerUnits: 'userSpaceOnUse' });
+    m.innerHTML = `<path d="M0,0 L8,3 L0,6 Z" fill="${color}"/>`;
+    defs.appendChild(m);
+  };
+  mk('arrOff', '#cccccc'); mk('arrOn', '#76b900');
+  svg.appendChild(defs);
+
+  demo._edges = demo.spec.edges.map(e => {
+    const p = el('path', { d: edgePath(e.src, e.dst, pos), fill: 'none', stroke: '#a7a7a7',
+      'stroke-width': 1.2, 'marker-end': 'url(#arrOff)' });
+    if (e.loop) p.setAttribute('stroke-dasharray', '5 4');
+    svg.appendChild(p);
+    return { ...e, path: p, key: e.src + '>' + e.dst };
+  });
+
+  demo._nodes = demo.spec.nodes.map(n => {
+    const p = pos.get(n.id);
+    const color = colorOf(n);
+    const g = el('g', {});
+    const rect = el('rect', { x: p.x, y: p.y, width: NODE_W, height: NODE_H, rx: 2,
+      fill: '#ffffff', stroke: '#cccccc', 'stroke-width': 1 });
+    if (n.kind === 'blackboard') rect.setAttribute('stroke-dasharray', '4 4');
+    const bar = el('rect', { x: p.x, y: p.y, width: 3, height: NODE_H, fill: color, opacity: 0.3 });
+    const t1 = el('text', { x: p.x + 4 + (NODE_W-4)/2, y: p.y + NODE_H/2 - 2, 'text-anchor': 'middle',
+      'font-size': 11.5, 'font-weight': 700, fill: '#000000' });
+    t1.textContent = n.name.length > 12 ? n.name.slice(0,12) + '…' : n.name;
+    const t2 = el('text', { x: p.x + 4 + (NODE_W-4)/2, y: p.y + NODE_H/2 + 14, 'text-anchor': 'middle',
+      'font-size': 9.5, fill: (n.kind === 'io' || n.kind === 'blackboard') ? '#757575' : color });
+    t2.textContent = KIND_LABEL[n.kind] || n.kind;
+    g.appendChild(rect); g.appendChild(bar); g.appendChild(t1); g.appendChild(t2);
+    svg.appendChild(g);
+    return { ...n, color, group: g, rect, bar };
+  });
+
+  $('graph').innerHTML = '';
+  $('graph').appendChild(svg);
+}
+
+function load() {
+  const demo = DEMOS[current];
+  document.querySelectorAll('#switcher button').forEach(b => {
+    b.className = b.textContent === demo.label ? 'active' : '';
+  });
+  $('title').textContent = demo.name + ' · ' + demo.label;
+  $('stAgents').textContent = demo.agents;
+  $('stRounds').textContent = demo.rounds;
+  $('stCalls').textContent = demo.calls;
+  $('stTokens').textContent = demo.steps.reduce((s,x)=>s+(x.pt||0)+(x.ct||0), 0);
+  renderGraph(demo);
+  reset();
+}
+
+function reset() {
+  step = -1; playing = false; stop();
+  const demo = DEMOS[current];
+  $('stStep').textContent = `0/${demo.steps.length}`;
+  $('stStep').style.color = 'var(--primary)';
+  $('prog').style.width = '0%';
+  $('msgCount').textContent = `0/${demo.steps.length} 条意见`;
+  $('msgs').innerHTML = `<div class="hint">点击「播放」查看每位医生实际输出的内容，以及它们在医生之间如何流转。</div>`;
+  $('finalTxt').innerHTML = '<span class="muted">尚未完成会诊</span>';
+  $('finalTxt').className = 'txt muted';
+  $('playBtn').textContent = '播放';
+  redrawGraph(-1);
+}
+
+function stop() { if (timer) clearInterval(timer); timer = null; }
+
+function redrawGraph(currentIdx) {
+  const demo = DEMOS[current];
+  const shown = demo.steps.slice(0, currentIdx + 1);
+  const visited = new Set(shown.map(s => s.node));
+  const cur = currentIdx >= 0 ? demo.steps[currentIdx] : null;
+
+  demo._edges.forEach(e => {
+    const flowed = visited.has(e.dst);
+    const live = cur && (e.dst === cur.node);
+    e.path.setAttribute('stroke', live || flowed ? '#76b900' : '#a7a7a7');
+    e.path.setAttribute('stroke-width', live ? 2.4 : flowed ? 1.8 : 1.2);
+    e.path.setAttribute('marker-end', flowed || live ? 'url(#arrOn)' : 'url(#arrOff)');
+  });
+
+  demo._nodes.forEach(n => {
+    const live = cur && cur.node === n.id;
+    const was = visited.has(n.id);
+    n.rect.setAttribute('fill', live ? 'rgba(118,185,0,0.10)' : '#ffffff');
+    n.rect.setAttribute('stroke', live ? '#76b900' : '#cccccc');
+    n.rect.setAttribute('stroke-width', live ? 2 : 1);
+    if (live) n.rect.classList.add('pulse'); else n.rect.classList.remove('pulse');
+    n.bar.setAttribute('opacity', was || live ? 1 : 0.3);
+    n.group.setAttribute('opacity', (currentIdx >= 0 && !was) ? 0.5 : 1);
+  });
+}
+
+function applyStep(idx) {
+  const demo = DEMOS[current];
+  if (idx < 0 || idx >= demo.steps.length) return;
+  step = idx;
+  const s = demo.steps[idx];
+  const n = demo.spec.nodes.find(x => x.id === s.node);
+  const color = n ? colorOf(n) : '#76b900';
+
+  $('stStep').textContent = `${idx+1}/${demo.steps.length}`;
+  $('msgCount').textContent = `${idx+1}/${demo.steps.length} 条意见`;
+  $('prog').style.width = `${Math.round((idx+1)/demo.steps.length*100)}%`;
+  redrawGraph(idx);
+
+  const wrap = $('msgs');
+  if (idx === 0) wrap.innerHTML = '';
+  const div = document.createElement('div');
+  div.className = 'msg';
+  div.style.borderLeftColor = color;
+  div.innerHTML =
+    `<div class="m-head">
+       <span class="name">${n ? n.name : s.node}</span>
+       <span class="badge">${n ? KIND_LABEL[n.kind] : ''}</span>
+       <span class="round">第${s.round + 1}轮</span>
+       <span class="tok">${(s.pt + s.ct) > 0 ? '↑' + (s.pt >= 1000 ? (s.pt/1000).toFixed(1)+'k' : s.pt) + ' ↓' + (s.ct >= 1000 ? (s.ct/1000).toFixed(1)+'k' : s.ct) : ''}</span>
+     </div>
+     <div class="body">${escapeHtml(s.content)}</div>`;
+  wrap.appendChild(div);
+  wrap.scrollTop = wrap.scrollHeight;
+
+  const done = idx >= demo.steps.length - 1;
+  if (done) {
+    $('finalTxt').innerHTML = escapeHtml(demo.final_answer);
+    $('finalTxt').className = 'txt';
+  } else {
+    $('finalTxt').innerHTML = '<span class="muted">尚未完成会诊</span>';
+    $('finalTxt').className = 'txt muted';
+  }
+}
+
+function escapeHtml(s) {
+  return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function play() {
+  const demo = DEMOS[current];
+  if (step >= demo.steps.length - 1) { reset(); }
+  if (playing) { playing = false; stop(); $('playBtn').textContent = '播放'; return; }
+  playing = true; $('playBtn').textContent = '暂停';
+  timer = setInterval(() => {
+    if (step >= demo.steps.length - 1) { playing = false; stop(); $('playBtn').textContent = '重播'; return; }
+    applyStep(step + 1);
+  }, 620);
+}
+
+$('playBtn').onclick = play;
+$('resetBtn').onclick = reset;
+$('prevBtn').onclick = () => { playing = false; stop(); $('playBtn').textContent = '播放'; if (step >= 0) applyStep(step - 1); };
+$('nextBtn').onclick = () => { playing = false; stop(); $('playBtn').textContent = '播放'; applyStep(step + 1); };
+
+renderSwitcher();
+load();
+play(); // 打开即自动播放
+</script>
+</body>
+</html>
