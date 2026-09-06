@@ -1,6 +1,10 @@
 .customSelect__wrapper .customSelect__control {
-  @apply border-inputfield-main w-full rounded-md border bg-white text-sm leading-tight text-foreground shadow-sm transition duration-200;
+  @apply border-inputfield-main w-full rounded-md border bg-input/30 text-sm leading-tight text-foreground shadow-sm transition duration-200;
   min-height: 28px;
+}
+
+.customSelect__wrapper .customSelect__placeholder {
+  @apply text-muted-foreground;
 }
 .customSelect__wrapper .customSelect__control:hover {
   @apply border-primary/40;

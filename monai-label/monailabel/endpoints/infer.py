@@ -287,6 +287,13 @@ def run_inference(
     if isinstance(result.get("params"), dict):
         result["params"]["server_request_ts"] = server_request_ts
 
+    # MAS consultations are textual results. Handle them before the optional
+    # DICOM-SEG branch because the viewer may still send output=dicom_seg from
+    # older frontend code; that branch would otherwise return raw text and lose
+    # the structured final trace.
+    if isinstance(result.get("params"), dict) and result["params"].get("mas_result") is True:
+        return send_response(instance.datastore(), result, output, background_tasks)
+
     # Dicom Seg Integration
     if output == "dicom_seg":
         dicom_seg_file = None

@@ -143,7 +143,9 @@ export default defineConfig({
   },
   server: {
     port: OHIF_PORT,
-    open: true,
+    // 启动入口统一交给主页(:8791) —— 由 scripts/start-dev.ps1 打开浏览器，
+    // dev server 不再自行弹出 :3000。
+    open: false,
     // Configure proxy
     proxy: {
       '/monai': {
@@ -155,6 +157,16 @@ export default defineConfig({
       },
       '/dicomweb': {
         target: 'http://localhost:5000',
+      },
+      // Default local route: proxy DICOMweb to the docker Orthanc (:8042),
+      // mirroring the nginx-orthanc recipe so `yarn dev:fast` works with no
+      // extra PROXY_* env vars. Conditional PROXY_TARGET below can override.
+      '/pacs': {
+        target: 'http://localhost:8042',
+        changeOrigin: true,
+        pathRewrite: {
+          '^/pacs': '',
+        },
       },
       // Add conditional proxy based on env vars
       ...(PROXY_TARGET && PROXY_DOMAIN

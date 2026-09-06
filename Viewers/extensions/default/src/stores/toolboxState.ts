@@ -123,6 +123,10 @@ export interface MasTraceEvent {
 /** The full trace returned by the MAS endpoint (spec graph + event stream). */
 export interface MasTracePayload {
   answer: string;
+  /** Set once the run settles: 'done' | 'error' | 'cancelled' (live poller). */
+  status?: string;
+  /** Backend failure reason shown to the user when status is 'error'. */
+  error?: string;
   strategy: string;
   strategy_label?: string;
   agent_count: number;

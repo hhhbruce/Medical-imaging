@@ -49,7 +49,6 @@
   "HttpTimeout": 10,
   "HttpsVerifyPeers": true,
   "HttpsCACertificates": "",
-  "UserMetadata": {},
   "UserContentType": {},
   "StableAge": 60,
   "StrictAetComparison": false,

@@ -46,7 +46,11 @@ def _spec(name, nodes, edges, entry, exit, max_rounds=4):
     )
 
 
-_MED_EXPERT = "你是一名经验丰富的医学专家。请逐步推理，给出你的依据和最终选项字母。请全程使用简体中文作答。"
+_MED_EXPERT = (
+    "你是一名经验丰富的医学专家。请逐步推理，给出你的依据和最终结论。"
+    "若问题本身附带了 A/B/C/D 等选项，最终结论以所选选项字母开头；"
+    "若问题没有提供选项，直接给出文字结论，不要自行编造或输出选项字母。"
+)
 
 
 def sequential() -> OrchestrationSpec:

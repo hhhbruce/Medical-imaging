@@ -2,6 +2,8 @@
 
 项目目录：`D:\Smart City\Medical-imaging`
 
+> 一键启动：`powershell -ExecutionPolicy Bypass -File scripts\start-dev.ps1`（按本文顺序拉起 Orthanc、主页 :8791、研究空间 :3000 并自动打开主页；加 `-WithMonai` / `-WithWorkbench` 可选启动 MONAI Label 与 docker 后台，`-Stop` 停止开发服务）。手动分步启动仍以下文为准。
+
 启动顺序：**Orthanc → MONAI Label 后端 → OHIF 前端**。三个服务建议分别使用独立的 PowerShell 终端。
 
 基础查看器页面和工具说明见 [`basic-viewer-user-guide.md`](./basic-viewer-user-guide.md)。

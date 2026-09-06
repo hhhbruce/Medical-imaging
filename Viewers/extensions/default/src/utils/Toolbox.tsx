@@ -1673,6 +1673,16 @@ export function Toolbox({
                             </span>
                           </div>
                         </div>
+                        {masTrace.status === 'error' && (
+                          <p className="text-destructive text-xs leading-relaxed break-all">
+                            会话失败：{masTrace.error || '上游服务返回错误，本次会话已中止。'}
+                          </p>
+                        )}
+                        {masTrace.status === 'cancelled' && (
+                          <p className="text-muted-foreground text-xs">
+                            本次会话已取消（被新发起的会话取代）。
+                          </p>
+                        )}
                         <Button
                           variant="outline"
                           size="sm"

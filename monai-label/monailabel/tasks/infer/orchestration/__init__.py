@@ -20,7 +20,7 @@ from .spec import (
     AggregatorStrategy,
 )
 from .agent import Agent, MockAgent
-from .engine import RuntimeEngine, RunResult
+from .engine import RuntimeEngine, RunResult, WorkflowCancelled
 from .tracer import write_trace_jsonl, load_trace_jsonl
 from .report import render_html, save_report
 
@@ -38,6 +38,7 @@ __all__ = [
     "MockAgent",
     "RuntimeEngine",
     "RunResult",
+    "WorkflowCancelled",
     "write_trace_jsonl",
     "load_trace_jsonl",
     "render_html",

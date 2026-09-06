@@ -11,6 +11,7 @@ answer (or routing decision / convergence verdict). Two implementations ship:
 from __future__ import annotations
 
 import re
+import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .spec import NodeSpec, AggregatorStrategy
@@ -33,6 +34,9 @@ class Agent:
         self.token_stats: Dict[str, Dict[str, int]] = {
             model_name: {"num_llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0}
         }
+        # Sibling nodes may execute in parallel (RuntimeEngine tier batches),
+        # and the token counters are read-modify-write — guard them.
+        self._stats_lock = threading.Lock()
 
     def _call(self, system: str, user: str, images=None, temperature: Optional[float] = None) -> Tuple[str, int, int]:
         messages: List[Dict[str, Any]] = []
@@ -40,11 +44,27 @@ class Agent:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": user})
         text, pt, ct = self.llm_call(messages, images, temperature)
-        st = self.token_stats[self.model_name]
-        st["num_llm_calls"] += 1
-        st["prompt_tokens"] += int(pt or 0)
-        st["completion_tokens"] += int(ct or 0)
+        with self._stats_lock:
+            st = self.token_stats[self.model_name]
+            st["num_llm_calls"] += 1
+            st["prompt_tokens"] += int(pt or 0)
+            st["completion_tokens"] += int(ct or 0)
         return text or "", int(pt or 0), int(ct or 0)
+
+    def credit_tokens(self, prompt_tokens: int, completion_tokens: int) -> None:
+        """Account tokens already spent in a prior (checkpointed) attempt.
+
+        Used by the engine when a resumed run replays a completed node
+        instead of re-invoking the model, so aggregate stats stay truthful.
+        """
+        with self._stats_lock:
+            st = self.token_stats.setdefault(
+                self.model_name,
+                {"num_llm_calls": 0, "prompt_tokens": 0, "completion_tokens": 0},
+            )
+            st["num_llm_calls"] += 1
+            st["prompt_tokens"] += int(prompt_tokens or 0)
+            st["completion_tokens"] += int(completion_tokens or 0)
 
     # -- engine callbacks ---------------------------------------------------
 

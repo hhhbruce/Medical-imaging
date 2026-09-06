@@ -43,6 +43,7 @@ import { updateSegmentationStats } from '../../cornerstone/src/utils/updateSegme
 import axios from 'axios';
 import {
   toolboxState,
+  type MasTracePayload,
   type VlmProviderId,
   type VllmFamilyId,
   type VllmThinkingLevel,
@@ -97,6 +98,21 @@ const commandsModule = ({
 
   let modelSwitchRequestId = 0;
   let modelSwitchAbortController: AbortController | undefined;
+
+  // MAS consultation runs (customVlm/testVlm): serial-with-interrupt bookkeeping.
+  // A newly started run supersedes the in-flight one: `masRunSeq` is bumped per
+  // run so stale invocations stop writing shared state, the previous POST is
+  // aborted, and the backend is asked to cooperatively cancel the old run.
+  let masRunSeq = 0;
+  let masRunAbortController: AbortController | undefined;
+  let masRunPollTimer: number | undefined;
+  let masRunPrevRunId: string | undefined;
+  const stopMasPoll = () => {
+    if (masRunPollTimer !== undefined) {
+      window.clearInterval(masRunPollTimer);
+      masRunPollTimer = undefined;
+    }
+  };
 
   // Listen for measurement added events to trigger nninter() when live mode is enabled
   measurementService.subscribe(measurementService.EVENTS.MEASUREMENT_ADDED, evt => {
@@ -3016,8 +3032,12 @@ const commandsModule = ({
       );
       const seriesUid = currentDisplaySets?.SeriesInstanceUID ?? '';
       // Without an open series the backend still answers (text-only custom branch).
+      // VLM/MAS requests return text or structured consultation JSON, never a
+      // DICOM-SEG object. Supplying output=dicom_seg makes the inference
+      // endpoint take its segmentation shortcut and bypass send_response(),
+      // which drops the final MAS trace from the POST response.
       const url = seriesUid
-        ? `/monai/infer/segmentation?image=${seriesUid}&output=dicom_seg`
+        ? `/monai/infer/segmentation?image=${seriesUid}`
         : `/monai/infer/segmentation`;
 
       const baseUrl = (options?.customBaseUrl ?? toolboxState.getCustomBaseUrl()).trim();
@@ -3039,6 +3059,26 @@ const commandsModule = ({
       const masRunId = useMasOrchestrator
         ? `mas-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
         : undefined;
+
+      // Serial-with-interrupt: a newly started run supersedes the previous
+      // one. `testVlm` bumps `masRunSeq` before dispatching here; once it
+      // moves again, this invocation has been interrupted and must stop
+      // writing the shared trace/result state.
+      const runSeq = masRunSeq;
+
+      // Interrupt the previous run: stop its poller, abort its in-flight
+      // POST, and ask the backend to cancel the workflow between LLM calls
+      // (best-effort — a 404 just means it already settled or was pruned).
+      stopMasPoll();
+      if (masRunPrevRunId && masRunPrevRunId !== masRunId) {
+        fetch(`/monai/mas/runs/${masRunPrevRunId}/cancel`, { method: 'POST' }).catch(() => {});
+      }
+      if (useMasOrchestrator) {
+        masRunPrevRunId = masRunId;
+      }
+      masRunAbortController?.abort();
+      const abortController = new AbortController();
+      masRunAbortController = abortController;
 
       const params: Record<string, unknown> = {
         largest_cc: false,
@@ -3064,15 +3104,13 @@ const commandsModule = ({
 
       // Live polling: every tick pulls the events accumulated so far on the
       // server and feeds them into toolboxState as an in-progress trace.
-      let masPollTimer: number | undefined;
-      const stopMasPoll = () => {
-        if (masPollTimer !== undefined) {
-          window.clearInterval(masPollTimer);
-          masPollTimer = undefined;
-        }
-      };
+      let myPollTimer: number | undefined;
       if (masRunId) {
-        masPollTimer = window.setInterval(async () => {
+        myPollTimer = window.setInterval(async () => {
+          if (runSeq !== masRunSeq || masRunPollTimer !== myPollTimer) {
+            // Superseded: this poller was already torn down.
+            return;
+          }
           try {
             const res = await fetch(`/monai/mas/runs/${masRunId}`);
             if (!res.ok) {
@@ -3080,23 +3118,105 @@ const commandsModule = ({
               return;
             }
             const snap = await res.json();
-            if (snap?.payload) {
-              toolboxState.setMasTrace(snap.payload);
+            if (runSeq !== masRunSeq) {
+              return;
             }
-            if (snap?.status === 'done' || snap?.status === 'error') {
-              stopMasPoll();
+            if (snap?.payload) {
+              const terminalStatus =
+                snap?.status === 'done' || snap?.status === 'error' || snap?.status === 'cancelled';
+              const terminalPayload = {
+                ...snap.payload,
+                ...(terminalStatus ? { status: snap.status } : {}),
+              } as MasTracePayload;
+              if (snap?.status === 'error' || snap?.status === 'cancelled') {
+                // Terminal failure: stamp the backend's reason onto the trace
+                // so the data-flow popup and the panel can render it instead
+                // of silently keeping the last mid-run snapshot.
+                terminalPayload.error =
+                  snap.error ||
+                  (snap.status === 'cancelled'
+                    ? '本次会话已取消（被新发起的会话取代）。'
+                    : '上游服务返回错误，本次会话已中止。');
+              }
+              toolboxState.setMasTrace(terminalPayload);
+
+              // The live snapshot is authoritative when the long-running POST
+              // is delayed or terminated by a proxy. End the UI's pending
+              // state from the terminal snapshot itself, and preserve the
+              // answer so the report panel can render it even if the POST
+              // never reaches the browser.
+              if (terminalStatus) {
+                const terminalAnswer =
+                  terminalPayload.answer || terminalPayload.trace?.final_answer || '';
+                toolboxState.setMedgemmaResult(
+                  terminalAnswer ||
+                    terminalPayload.error ||
+                    (snap.status === 'cancelled' ? '本次会话已取消。' : '本次会话已中止。')
+                );
+              }
+            }
+            if (
+              snap?.status === 'done' ||
+              snap?.status === 'error' ||
+              snap?.status === 'cancelled'
+            ) {
+              if (masRunPollTimer === myPollTimer) {
+                stopMasPoll();
+              }
             }
           } catch {
             // Transient network error — the next tick retries.
           }
         }, 700);
+        masRunPollTimer = myPollTimer;
       }
+
+      // One-shot terminal fetch used by the POST error path. The backend
+      // records the run's terminal state (done/error/degraded) *before* the
+      // synchronous POST rejects, but the 700ms poller usually misses that
+      // narrow window and the finally block below stops it. This fetch pulls
+      // the authoritative final snapshot — the complete trace including the
+      // failed node's reason — instead of approximating from mid-run data.
+      const settleFromRunSnapshot = async (rid: string): Promise<boolean> => {
+        try {
+          const res = await fetch(`/monai/mas/runs/${rid}`);
+          if (!res.ok) {
+            return false;
+          }
+          const snap = await res.json();
+          if (runSeq !== masRunSeq) {
+            // Superseded mid-fetch: the newer run owns the shared state.
+            return true;
+          }
+          const terminal =
+            snap?.status === 'done' || snap?.status === 'error' || snap?.status === 'cancelled';
+          if (!terminal || !snap?.payload) {
+            return false;
+          }
+          const finalPayload = {
+            ...snap.payload,
+            status: snap.status,
+            ...(snap.error ? { error: snap.error } : {}),
+          } as MasTracePayload;
+          toolboxState.setMasTrace(finalPayload);
+          const finalAnswer = finalPayload.answer || finalPayload.trace?.final_answer || '';
+          toolboxState.setMedgemmaResult(
+            finalAnswer ||
+              finalPayload.error ||
+              (snap.status === 'cancelled' ? '本次会话已取消。' : '本次会话已中止。')
+          );
+          return true;
+        } catch {
+          return false;
+        }
+      };
 
       const customPromise = axios.post(url, data, {
         responseType: 'text',
         headers: {
           accept: 'application/json, text/plain',
         },
+        signal: abortController.signal,
       });
 
       uiNotificationService.show({
@@ -3123,6 +3243,11 @@ const commandsModule = ({
 
       try {
         const response = await customPromise;
+        if (runSeq !== masRunSeq || abortController.signal.aborted) {
+          // Interrupted by a newer run: touch nothing — the winner owns the
+          // shared trace/result state from here on.
+          return { data: '' };
+        }
         if (response.status === 200) {
           // The MAS endpoint returns JSON: { answer, spec, trace, ... }.
           // Parse whenever the body is JSON so the popup receives the final
@@ -3130,7 +3255,7 @@ const commandsModule = ({
           try {
             const payload = JSON.parse(response.data);
             if (payload && typeof payload === 'object' && 'answer' in payload) {
-              toolboxState.setMasTrace(payload);
+              toolboxState.setMasTrace({ ...payload, status: 'done' });
               return { data: payload?.answer ?? '' };
             }
           } catch {
@@ -3139,10 +3264,62 @@ const commandsModule = ({
           return response;
         }
       } catch (error) {
+        if (runSeq !== masRunSeq || abortController.signal.aborted) {
+          // An aborted (superseded) run is expected, not an error: the
+          // in-flight POST rejects with CanceledError once interrupted.
+          return { data: '' };
+        }
         console.error('Custom VLM error:', error);
+        // Stamp the failure into the data-flow trace as well: a POST that
+        // fails (upstream 5xx / content-filter 4xx) must end the popup's
+        // waiting screen with the backend's reason, not hang silently.
+        const errorDetail =
+          (error as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail ??
+          (error as Error)?.message ??
+          'Unknown error';
+        const existingTrace = toolboxState.getMasTrace();
+        // A completed live snapshot is authoritative even when the long POST
+        // later fails at a proxy timeout. Keep the final answer and do not
+        // replace it with a transport-level error.
+        if (existingTrace?.status === 'done') {
+          return { data: existingTrace.answer || existingTrace.trace?.final_answer || '' };
+        }
+        // Before approximating from mid-run data, try the run registry once:
+        // a degraded consultation (node exhausted its retries) and hard
+        // backend failures are recorded there with the full final trace and
+        // the backend's reason. This also fills the report panel's result.
+        if (masRunId && (await settleFromRunSnapshot(masRunId))) {
+          throw error;
+        }
+        const settledTrace: MasTracePayload =
+          existingTrace?.trace?.events?.length || existingTrace?.spec?.nodes?.length
+            ? { ...existingTrace, status: 'error', error: String(errorDetail).slice(0, 400) }
+            : {
+                answer: '',
+                status: 'error',
+                error: String(errorDetail).slice(0, 400),
+                strategy: (masStrategy as string) ?? 'single',
+                agent_count: 0,
+                rounds: 0,
+                spec: { name: '', entry: '', exit: '', max_rounds: 0, nodes: [], edges: [] },
+                trace: {
+                  name: '',
+                  final_answer: '',
+                  num_llm_calls: 0,
+                  prompt_tokens: 0,
+                  completion_tokens: 0,
+                  rounds: 0,
+                  events: [],
+                },
+              };
+        toolboxState.setMasTrace(settledTrace);
         throw error;
       } finally {
-        stopMasPoll();
+        // Tear down this run's poller unless a newer run already replaced it
+        // (the newer run's interrupt step cleared the shared timer slot).
+        if (masRunPollTimer === myPollTimer) {
+          stopMasPoll();
+        }
       }
     },
     async nninter(textPrompts?: string | string[]) {
@@ -3983,6 +4160,10 @@ const commandsModule = ({
       };
       const queryDialogTitle = queryDialogTitles[vlm];
 
+      // Serial-with-interrupt token: bumped per run; the guards below keep an
+      // interrupted (superseded) invocation from writing shared panel state.
+      let vlmRunSeq = 0;
+
       try {
         let instructionText = instruction;
         if (!instructionText?.trim()) {
@@ -4014,6 +4195,9 @@ const commandsModule = ({
           toolboxState.setMedgemmaEndSlice(endSlice);
         }
 
+        // Serial-with-interrupt: starting a run supersedes any in-flight one
+        // (customVlm stops its poller/POST and asks the backend to cancel it).
+        vlmRunSeq = ++masRunSeq;
         toolboxState.setMedgemmaResult(null);
         toolboxState.setMasTrace(null);
 
@@ -4105,6 +4289,10 @@ const commandsModule = ({
           );
         }
 
+        if (vlmRunSeq !== masRunSeq) {
+          // Superseded while waiting: the newer run owns the panel state now.
+          return;
+        }
         let responseText = '';
         if (response && response.data) {
           responseText = typeof response.data === 'string' ? response.data : String(response.data);
@@ -4132,6 +4320,11 @@ const commandsModule = ({
           if (detail) {
             message = String(detail);
           }
+        }
+        if (vlmRunSeq !== masRunSeq) {
+          // Superseded: the newer run decides what the panel shows; an
+          // interrupted run must not surface its own cancellation here.
+          return;
         }
         toolboxState.setMedgemmaResult(`Error: ${message}`);
         return;

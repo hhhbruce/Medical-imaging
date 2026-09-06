@@ -13,10 +13,14 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from threading import Lock
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+import json
+import logging
+import os
 import re
+import tempfile
 import time
 
-from monailabel.tasks.infer.orchestration import Agent, RuntimeEngine
+from monailabel.tasks.infer.orchestration import Agent, RuntimeEngine, WorkflowCancelled
 from monailabel.tasks.infer.orchestration.spec import (
     AggregatorStrategy,
     EdgeSpec,
@@ -25,6 +29,8 @@ from monailabel.tasks.infer.orchestration.spec import (
     OrchestrationSpec,
 )
 from monailabel.tasks.infer.orchestration.patterns import build_expert_panel
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -192,6 +198,104 @@ def _reasoning_text(response: Any) -> str:
     return reasoning if isinstance(reasoning, str) else ""
 
 
+def _finish_reason(response: Any) -> str:
+    """Best-effort extraction of ``choices[0].finish_reason`` from a chat response."""
+    try:
+        reason = getattr(response.choices[0], "finish_reason", None)
+    except (AttributeError, IndexError):
+        return ""
+    return str(reason or "").lower()
+
+
+def _clean_upstream_error(exc: BaseException) -> str:
+    """Compact, human-readable reason from an upstream exception.
+
+    Relays/gateways sometimes answer with a full HTML error page (ALB 504) or
+    a long multi-line JSON body; embedding those verbatim into the user-facing
+    failure banner looks like leaking code. Keep the status code and the short
+    reason (the HTML ``<title>`` for gateway pages) instead.
+    """
+    raw = str(exc)
+    lowered = raw.lower()
+    status = getattr(exc, "status_code", None)
+    if "<html" in lowered or "<body" in lowered or "<title>" in lowered:
+        match = re.search(r"<title>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
+        title = match.group(1).strip() if match else ""
+        reason = title or "网关返回了 HTML 错误页"
+    else:
+        reason = re.sub(r"\s+", " ", raw).strip()
+        if len(reason) > 300:
+            reason = reason[:300] + "…"
+    prefix = f"HTTP {status}: " if status and "error code" not in lowered else ""
+    return f"{prefix}{reason}"
+
+
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+
+# Transient upstream failures (timeout / 5xx / 504 / connection reset) are
+# retried up to this many times per agent call with exponential backoff before
+# the step is considered failed. 5 attempts give a slow-but-recovering gateway
+# room to get a request through (a 60s-capped relay eats one attempt per hit);
+# once exhausted the step degrades and the run keeps its checkpoint, so the
+# same mas_run_id can resume from the failed node instead of restarting.
+_MAX_TRANSIENT_RETRIES = 5
+_BACKOFF_BASE_SECONDS = 1.0
+_BACKOFF_MAX_SECONDS = 8.0
+
+# Output-token budget ladder. Attempt 0 keeps a small budget so specialist
+# calls stay below common relay/ALB time limits; subsequent rungs raise the
+# ceiling so a reasoning model that spent the first budget on hidden thinking
+# (empty final ``content``) or a mid-sentence cut (``finish_reason=length``)
+# can fit its visible answer. The final rung is repeated once so a reasoning
+# model has a second chance at the larger budget before its hidden reasoning
+# is surfaced as a last-resort fallback.
+_BUDGET_LADDER = (1536, 4096, 4096)
+
+
+def _is_retryable_upstream_error(exc: BaseException) -> bool:
+    """True when an upstream exception is transient and worth retrying.
+
+    The ``openai`` SDK raises typed exceptions (``APITimeoutError``,
+    ``APIConnectionError``, ``RateLimitError``, and the ``APIStatusError``
+    subclasses such as ``InternalServerError``). Their ``str()`` frequently
+    omits the numeric status — a 504 gateway body can be raw HTML and a timeout
+    reads "Request timed out." — so match on the status-code attribute and the
+    exception class name first, then fall back to message keywords.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        try:
+            if int(status) in _RETRYABLE_STATUS_CODES:
+                return True
+        except (TypeError, ValueError):
+            pass
+    name = type(exc).__name__.lower()
+    if any(
+        marker in name
+        for marker in (
+            "timeout", "connection", "ratelimit", "internalserver",
+            "serviceunavailable", "badgateway", "gatewaytimeout",
+        )
+    ):
+        return True
+    lowered = str(exc).lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "408", "429", "500", "502", "503", "504",
+            "timeout", "timed out", "temporarily", "connection reset",
+            "connection error", "service unavailable", "bad gateway",
+        )
+    )
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Exponential backoff with jitter (``attempt`` is 1-based)."""
+    import random
+    cap = min(_BACKOFF_MAX_SECONDS, _BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+    return cap * (0.5 + random.random() * 0.5)
+
+
 def _call_agent(
     client: Any,
     model: str,
@@ -201,45 +305,72 @@ def _call_agent(
 ) -> str:
     last_error: Exception | None = None
     reasoning_tail = ""
-    # Attempt 1 keeps a small budget so specialist calls stay below common
-    # relay/ALB time limits. Reasoning models can spend the entire budget on
-    # hidden thinking and return an empty final ``content`` — later attempts
-    # raise the ceiling so the visible answer fits.
-    for attempt, max_tokens in enumerate((1536, 4096, 4096)):
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            stats.calls += 1
-            stats.add_usage(response)
-            if _has_final_text(response):
-                return _message_text(response)
-            reasoning_tail = _reasoning_text(response) or reasoning_tail
-            last_error = MASWorkflowError(
-                "The model returned an empty assistant message; the output budget may be exhausted."
-            )
-        except Exception as exc:
-            last_error = exc
-            retryable = any(
-                marker in str(exc).lower()
-                for marker in ("408", "429", "500", "502", "503", "504", "timeout", "temporarily")
-            )
-            if not retryable:
-                raise
-        if attempt < 2:
-            time.sleep(1.5 * (attempt + 1))
+    best_truncated = ""
+    transient_retries = 0
 
-    # Last resort: when no final content ever arrived, surface the model's own
-    # reasoning instead of failing the whole consultation. The prompt-level
-    # output rules and the retry with a larger budget make this path rare.
+    # Attempt ladder: attempt 0 keeps a small output budget so specialist calls
+    # stay below common relay/ALB time limits, and the next rung raises the
+    # ceiling so a reasoning model that spent the first budget on hidden
+    # thinking can fit its visible answer. Transient upstream failures (408 /
+    # 429 / 5xx / 504 / timeout / connection reset) are retried *in place*
+    # with exponential backoff and do not consume the ladder, so a flaky relay
+    # no longer collapses the whole multi-agent run.
+    for attempt, max_tokens in enumerate(_BUDGET_LADDER):
+        while True:
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                stats.calls += 1
+                stats.add_usage(response)
+                if _has_final_text(response):
+                    text = _message_text(response)
+                    if _finish_reason(response) != "length" or attempt == len(_BUDGET_LADDER) - 1:
+                        return text
+                    # The visible answer hit the attempt-0 output-token budget
+                    # and was cut mid-sentence. Remember it as a fallback and
+                    # advance the ladder so the recorded opinion is complete —
+                    # an answer truncated by ``max_tokens`` looks like a normal
+                    # (non-empty) response otherwise.
+                    best_truncated = text
+                else:
+                    reasoning_tail = _reasoning_text(response) or reasoning_tail
+                    last_error = MASWorkflowError(
+                        "The model returned an empty assistant message; the output budget may be exhausted."
+                    )
+                break  # a response arrived (successful or empty) — advance the ladder
+            except Exception as exc:
+                if _is_retryable_upstream_error(exc) and transient_retries < _MAX_TRANSIENT_RETRIES:
+                    transient_retries += 1
+                    last_error = exc
+                    time.sleep(_backoff_delay(transient_retries))
+                    continue  # retry the same token budget after backoff
+                if _is_retryable_upstream_error(exc):
+                    # Retry budget exhausted. Give up gracefully — the engine
+                    # records the partial results collected so far and returns
+                    # them to the viewer instead of silently dropping them.
+                    raise MASWorkflowError(
+                        f"上游模型服务调用失败，本次多智能体会话已中止：{_clean_upstream_error(exc)}"
+                    ) from exc
+                # Non-transient (content-filter rejection, auth, bad request, ...):
+                # retrying cannot help, so abort immediately.
+                raise MASWorkflowError(
+                    f"上游模型服务调用失败，本次多智能体会话已中止：{_clean_upstream_error(exc)}"
+                ) from exc
+
+    # Last resort: prefer the (truncated) visible answer from attempt 0 over
+    # the model's hidden reasoning, then the reasoning itself. The prompt-level
+    # output rules and the larger-budget rung make these paths rare.
+    if best_truncated:
+        return _sanitize_model_text(best_truncated.strip())
     if reasoning_tail:
         return _sanitize_model_text(_strip_thinking(reasoning_tail).strip())
     if last_error is not None:
-        if isinstance(last_error, MASWorkflowError):
-            raise last_error
+        # Either the empty-content MASWorkflowError or a transient error whose
+        # retry budget was consumed before any rung produced text.
         raise last_error
     raise MASWorkflowError("The model request failed without a response.")
 
@@ -800,7 +931,8 @@ def _autogen_spec() -> OrchestrationSpec:
             "in": _n("in", NodeKind.IO),
             "asst": _n("asst", NodeKind.AGENT, "助手智能体",
                        "你是 AutoGen 框架中的医学助手智能体。请与用户代理协作完成会诊作答："
-                       "给出充分推理与明确结论；收到反馈后逐条回应并修订。" + _ZH),
+                       "给出充分推理与明确结论；收到反馈后逐条回应并修订。" + _ZH,
+                       rbb=True, wbb=True),
             "proxy": _n("proxy", NodeKind.EVALUATOR, "用户代理",
                         _converged_gate_role(
                             "若助手回复已完整、可作为交付结论（相当于发出终止消息），判 converged；"
@@ -1002,10 +1134,11 @@ def _make_orchestrated_llm_call(client: Any, model: str, image_parts: List[Dict[
 
     Returns ``(text, prompt_tokens, completion_tokens)``. The multimodal image
     parts are prepended to the first user message (the engine passes ``images``
-    only on round 0), and token usage is measured as the delta per call.
+    only on round 0). Each call gets its own :class:`WorkflowStats` instance:
+    sibling agents execute concurrently (engine tier batches), and a shared
+    counter would lose read-modify-write updates and report wrong per-call
+    deltas — per-call stats make the usage accounting exact.
     """
-    stats = WorkflowStats()
-
     def llm_call(messages, images=None, temperature=None):
         system = next((m["content"] for m in messages if m.get("role") == "system"), None)
         user_text = next((m["content"] for m in messages if m.get("role") == "user"), "")
@@ -1030,13 +1163,12 @@ def _make_orchestrated_llm_call(client: Any, model: str, image_parts: List[Dict[
             user_content = "请根据系统指令开始作答。"
         msgs.append({"role": "user", "content": user_content})
 
-        before_pt = stats.prompt_tokens
-        before_ct = stats.completion_tokens
+        call_stats = WorkflowStats()
         text = _call_agent(
-            client, model, msgs, stats,
+            client, model, msgs, call_stats,
             temperature=0.1 if temperature is None else float(temperature),
         )
-        return text, stats.prompt_tokens - before_pt, stats.completion_tokens - before_ct
+        return text, call_stats.prompt_tokens, call_stats.completion_tokens
 
     return llm_call
 
@@ -1062,6 +1194,7 @@ def mas_run_register(run_id: str, strategy: str) -> Dict[str, Any]:
     entry: Dict[str, Any] = {
         "run_id": run_id,
         "status": "running",
+        "cancelled": False,
         "strategy": strategy,
         "strategy_label": _STRATEGY_META.get(strategy, strategy),
         "spec": None,
@@ -1127,7 +1260,11 @@ def mas_run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
         1 for n in spec_nodes if n.get("kind") in ("agent", "router", "aggregator", "evaluator")
     )
 
-    if status == "done" and final_trace is not None:
+    if final_trace is not None and status in ("done", "error"):
+        # Terminal state (done, or degraded/error after the final trace was
+        # stored): serve the exact final trace instead of the live-event
+        # approximation, so the poller's last snapshot matches what the run
+        # actually produced (including the node_error / partial flags).
         trace = final_trace
         rounds = int((metadata or {}).get("rounds", 0))
         agent_count = int((metadata or {}).get("agent_count", live_agent_count))
@@ -1139,7 +1276,14 @@ def mas_run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
         trace = {
             "name": (spec or {}).get("name", ""),
             "final_answer": answer or "",
-            "num_llm_calls": sum(1 for e in events if live_pt or live_ct or e.get("type") == "node_end"),
+            # Count per-event usage, not the run totals: once any node reports
+            # tokens, ``live_pt or live_ct`` is truthy for the whole run and
+            # would wrongly count every event (start/edge/route) as a call.
+            "num_llm_calls": sum(
+                1
+                for e in events
+                if e.get("prompt_tokens") or e.get("completion_tokens") or e.get("type") == "node_end"
+            ),
             "prompt_tokens": live_pt,
             "completion_tokens": live_ct,
             "rounds": live_rounds,
@@ -1166,6 +1310,99 @@ def mas_run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
     return {"status": status, "error": error, "payload": payload}
 
 
+def mas_run_cancel(run_id: str) -> bool:
+    """Mark a running workflow cancelled (cooperative engine abort).
+
+    Returns True when the run exists. Unknown/finished runs are a no-op.
+    The engine checks the flag between LLM calls and raises
+    :class:`WorkflowCancelled`, which terminates the run without further
+    model calls (the viewer starts a newer run that supersedes it).
+    """
+    with _MAS_RUNS_LOCK:
+        entry = _MAS_RUNS.get(run_id)
+        if entry is None:
+            return False
+        if entry.get("status") == "running":
+            entry["cancelled"] = True
+            entry["updated_ts"] = time.time()
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint / resume ("断点续传").
+#
+# Completed node outputs are persisted to disk keyed by ``run_id`` so that a
+# multi-agent run that dies part-way (upstream timeout / 5xx after the retry
+# budget) can be resumed by re-submitting the same ``mas_run_id``: the engine
+# replays already-finished nodes instead of re-invoking the model and starting
+# from zero. On success the checkpoint is deleted; on failure it is retained
+# for the next attempt. All disk I/O is best-effort — checkpoint failures must
+# never break a clinical workflow.
+# ---------------------------------------------------------------------------
+
+_MAS_CHECKPOINT_ENV_DIR = "MONAI_LABEL_MAS_CHECKPOINT_DIR"
+
+
+def _mas_checkpoint_dir() -> str:
+    base = os.environ.get(_MAS_CHECKPOINT_ENV_DIR) or tempfile.gettempdir()
+    return os.path.join(base, "monailabel-mas-checkpoints")
+
+
+def _mas_checkpoint_path(run_id: str) -> str:
+    return os.path.join(_mas_checkpoint_dir(), f"{run_id}.json")
+
+
+def mas_checkpoint_save(
+    run_id: str,
+    strategy: str,
+    model: str,
+    nodes: Dict[str, Any],
+) -> None:
+    """Best-effort persist of completed node outputs for a run."""
+    try:
+        path = _mas_checkpoint_path(run_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        payload = {
+            "run_id": run_id,
+            "strategy": strategy,
+            "model": model,
+            "updated_ts": time.time(),
+            "nodes": nodes,
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        logger.exception("MAS checkpoint save failed for run_id=%s", run_id)
+
+
+def mas_checkpoint_load(run_id: str) -> Optional[Dict[str, Any]]:
+    """Load a persisted checkpoint for a run, or None if absent/corrupt."""
+    try:
+        path = _mas_checkpoint_path(run_id)
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return None
+        return data
+    except Exception:
+        logger.exception("MAS checkpoint load failed for run_id=%s", run_id)
+        return None
+
+
+def mas_checkpoint_clear(run_id: str) -> None:
+    """Remove a checkpoint once a run has completed successfully."""
+    try:
+        path = _mas_checkpoint_path(run_id)
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        logger.exception("MAS checkpoint clear failed for run_id=%s", run_id)
+
+
 def run_orchestrated_workflow(
     *,
     client: Any,
@@ -1185,6 +1422,12 @@ def run_orchestrated_workflow(
     When ``run_id`` is provided, every engine event is also streamed into an
     in-process registry (see :func:`mas_run_snapshot`) so the viewer can poll
     the run in real time while the POST request is still in flight.
+
+    A degraded run (a node exhausted its retry budget) is a failed
+    consultation: the registry entry is recorded with ``status="error"`` and
+    the full intermediate trace, the checkpoint is retained for resume, and
+    :class:`MASWorkflowError` is raised so the synchronous request fails
+    instead of returning an empty answer.
     """
     strategy = (strategy or "single").strip().lower()
     builder = _STRATEGY_SPECS.get(strategy)
@@ -1199,19 +1442,63 @@ def run_orchestrated_workflow(
     if entry is not None:
         mas_run_update(entry, spec=spec.to_dict())
 
+    # Resume ("断点续传"): load any persisted node outputs from a prior failed
+    # attempt of this run so completed steps are replayed instead of re-invoked.
+    completed: Dict[str, Any] = {}
+    if run_id:
+        checkpoint = mas_checkpoint_load(run_id)
+        if checkpoint and checkpoint.get("strategy") == strategy and checkpoint.get("model") == model:
+            completed = dict(checkpoint.get("nodes") or {})
+
     image_parts = _extract_image_parts(initial_content)
     llm_call = _make_orchestrated_llm_call(client, model, image_parts)
     agent = Agent(llm_call=llm_call, model_name=model)
+
+    # Serializes checkpoint writes from the engine's concurrent worker threads.
+    _checkpoint_lock = Lock()
+
+    def on_node_complete(round_no, nid, out_text, pt, ct, meta):
+        if run_id is None:
+            return
+        # The engine completes sibling nodes concurrently, so the checkpoint
+        # append + disk write must be serialized: concurrent json.dump calls
+        # on the same tmp path would interleave and corrupt the file.
+        with _checkpoint_lock:
+            completed[f"{round_no}:{nid}"] = {
+                "output": out_text,
+                "prompt_tokens": int(pt or 0),
+                "completion_tokens": int(ct or 0),
+                "meta": dict(meta or {}),
+            }
+            mas_checkpoint_save(run_id, strategy, model, completed)
+
     engine = RuntimeEngine(
         spec, agent,
         on_event=(lambda ev: mas_run_append_event(entry, ev)) if entry is not None else None,
+        should_abort=(lambda: bool(entry.get("cancelled"))) if entry is not None else None,
+        on_node_complete=on_node_complete if run_id else None,
     )
     try:
-        result = engine.run(question, images=initial_content)
+        result = engine.run(question, images=initial_content, completed=completed)
+    except WorkflowCancelled:
+        # Superseded by a newer run — record a distinct terminal status so the
+        # viewer's poller stops without surfacing this as an error.
+        if entry is not None:
+            mas_run_update(entry, status="cancelled", error="superseded by a newer run")
+        raise
     except Exception as exc:
+        # Keep the checkpoint so the next attempt can resume from here instead
+        # of restarting from zero; record the failure on the registry.
         if entry is not None:
             mas_run_update(entry, status="error", error=str(exc))
         raise
+
+    # A fully successful run no longer needs its checkpoint. A degraded run
+    # (one or more agents exhausted their retry budget) keeps its checkpoint
+    # so the client can re-submit the same ``mas_run_id`` and resume only the
+    # failed steps instead of restarting the whole consultation from zero.
+    if run_id and not result.degraded:
+        mas_checkpoint_clear(run_id)
 
     token_stats: Dict[str, int] = {
         "num_llm_calls": 0,
@@ -1229,19 +1516,43 @@ def run_orchestrated_workflow(
         "agent_count": spec.num_agents(),
         "rounds": result.rounds,
     }
+    trace_dict = result.trace.to_dict()
+
+    # A failed node invalidates the consultation. Preserve intermediate agent
+    # outputs in the trace for diagnosis, but never return them as answer or
+    # store the run as done.
+    answer = result.final_answer
+    if result.degraded:
+        metadata["partial"] = True
+        metadata["error"] = result.degraded
+        trace_dict["partial"] = True
+        trace_dict["error"] = result.degraded
+        answer = ""
+
     if entry is not None:
         mas_run_update(
             entry,
-            status="done",
-            answer=result.final_answer,
+            status="error" if result.degraded else "done",
+            answer=answer,
             token_stats=token_stats,
             metadata=metadata,
-            trace=result.trace.to_dict(),
+            trace=trace_dict,
+            error=result.degraded,
+        )
+    if result.degraded:
+        # The synchronous POST must not return 200 with an empty answer (the
+        # viewer would render it as a successful consultation). Reject the
+        # request with the failed node's reason; the run registry and the
+        # retained checkpoint already hold the intermediate results, and the
+        # client can re-submit the same ``mas_run_id`` to resume.
+        raise MASWorkflowError(
+            "本次多智能体会诊未完整完成："
+            f"{result.degraded}。已完成步骤已通过检查点保留，重新提交相同请求可断点续传。"
         )
     return (
-        result.final_answer,
+        answer,
         token_stats,
         metadata,
         spec.to_dict(),
-        result.trace.to_dict(),
+        trace_dict,
     )

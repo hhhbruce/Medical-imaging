@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from monailabel.config import RBAC_USER, settings
 from monailabel.endpoints.user.auth import RBAC, User
-from monailabel.tasks.infer.mas_inference import mas_run_snapshot
+from monailabel.tasks.infer.mas_inference import mas_run_cancel, mas_run_snapshot
 
 router = APIRouter(prefix="/mas", tags=["MAS"])
 
@@ -34,3 +34,21 @@ async def api_mas_run(run_id: str, user: User = Depends(RBAC(settings.MONAI_LABE
         # request). Returning 404 lets the viewer keep polling.
         raise HTTPException(status_code=404, detail=f"Unknown MAS run: {run_id}")
     return snapshot
+
+
+@router.post(
+    "/runs/{run_id}/cancel",
+    summary=f"{RBAC_USER}Cancel a running multi-agent workflow",
+)
+async def api_mas_run_cancel(
+    run_id: str, user: User = Depends(RBAC(settings.MONAI_LABEL_AUTH_ROLE_USER))
+):
+    """Interrupt a running MAS workflow.
+
+    The engine aborts cooperatively between LLM calls (the in-flight model
+    call finishes first). The viewer calls this before starting a newer run
+    so the superseded consultation stops burning tokens.
+    """
+    if not mas_run_cancel(run_id):
+        raise HTTPException(status_code=404, detail=f"Unknown MAS run: {run_id}")
+    return {"run_id": run_id, "cancelled": True}

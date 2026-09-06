@@ -2,6 +2,46 @@
 window.config = {
   routerBasename: null,
   showStudyList: true,
+  // Logo 点击返回 NEXUS 主页（本地开发主页 = http://localhost:8791/）。
+  // 该配置同时服务于 rsbuild 开发服务器(研究空间 :3000)与 docker 后台(:1026)，
+  // 渲染位置见 platform/ui/src/components/Header/Header.tsx 的 createLogoComponentFn。
+  whiteLabeling: {
+    createLogoComponentFn: function (React) {
+      return React.createElement(
+        'a',
+        {
+          href: 'http://localhost:8791/',
+          target: '_self',
+          title: '返回主页',
+          style: {
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            textDecoration: 'none',
+            color: '#ffffff',
+          },
+        },
+        React.createElement(
+          'span',
+          { style: { fontWeight: 600, fontSize: '15px', letterSpacing: '.16em' } },
+          'NEXUS'
+        ),
+        React.createElement(
+          'span',
+          {
+            style: {
+              fontSize: '11px',
+              opacity: 0.65,
+              border: '1px solid rgba(255,255,255,.35)',
+              borderRadius: '4px',
+              padding: '2px 6px',
+            },
+          },
+          '← 主页'
+        )
+      );
+    },
+  },
   extensions: [],
   modes: [],
   // below flag is for performance reasons, but it might not work for all servers

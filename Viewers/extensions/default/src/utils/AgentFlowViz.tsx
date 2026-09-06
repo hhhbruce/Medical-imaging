@@ -1,10 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  MasTracePayload,
-  MasNode,
-  MasEdge,
-  MasTraceEvent,
-} from '../stores/toolboxState';
+import type { MasTracePayload, MasNode, MasEdge, MasTraceEvent } from '../stores/toolboxState';
 import { MarkdownText } from './MarkdownText';
 
 /**
@@ -74,6 +69,10 @@ const NODE_W = 116;
 const NODE_H = 46;
 const GAP_X = 24;
 const GAP_Y = 66;
+/* Upper bounds for the adaptive gap stretch — keeps sparse graphs (e.g. CoT's
+   two nodes) from being absurdly spread out when the pane is much taller. */
+const GAP_MAX_X = 96;
+const GAP_MAX_Y = 150;
 const PAD = 16;
 
 interface LayoutPos {
@@ -82,7 +81,11 @@ interface LayoutPos {
   level: number;
 }
 
-function computeLayout(spec: MasTracePayload['spec']): Map<string, LayoutPos> {
+function computeLayout(
+  spec: MasTracePayload['spec'],
+  gapX: number = GAP_X,
+  gapY: number = GAP_Y
+): Map<string, LayoutPos> {
   const succ = new Map<string, string[]>();
   for (const e of spec.edges) {
     const list = succ.get(e.src) ?? [];
@@ -119,7 +122,7 @@ function computeLayout(spec: MasTracePayload['spec']): Map<string, LayoutPos> {
   const pos = new Map<string, LayoutPos>();
   for (const lv of [...byLevel.keys()].sort((a, b) => a - b)) {
     (byLevel.get(lv) ?? []).forEach((id, i) => {
-      pos.set(id, { x: i * (NODE_W + GAP_X), y: lv * (NODE_H + GAP_Y), level: lv });
+      pos.set(id, { x: i * (NODE_W + gapX), y: lv * (NODE_H + gapY), level: lv });
     });
   }
   return pos;
@@ -190,13 +193,126 @@ export function AgentFlowViz({
     return m;
   }, [spec]);
 
-  const pos = useMemo(() => computeLayout(spec), [spec]);
+  // Adaptive layout: the graph stretches to exactly fill the left pane.
+  // Inter-column / inter-layer gaps grow (up to GAP_MAX_*) to use the free
+  // space; for graphs larger than the pane a uniform shrink-to-fit scale
+  // (fitScale, below) kicks in instead. The pane is measured with a
+  // ResizeObserver so the fill follows every modal resize.
+  const graphBoxRef = useRef<HTMLDivElement | null>(null);
+  const [graphBox, setGraphBox] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = graphBoxRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(entries => {
+      const rect = entries[0].contentRect;
+      setGraphBox(prev =>
+        Math.abs(prev.w - rect.width) < 0.5 && Math.abs(prev.h - rect.height) < 0.5
+          ? prev
+          : { w: rect.width, h: rect.height }
+      );
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const naturalPos = useMemo(() => computeLayout(spec), [spec]);
+
+  const shape = useMemo(() => {
+    let levels = 0;
+    let cols = 0;
+    const perLevel = new Map<number, number>();
+    naturalPos.forEach(p => {
+      perLevel.set(p.level, (perLevel.get(p.level) ?? 0) + 1);
+      levels = Math.max(levels, p.level + 1);
+    });
+    perLevel.forEach(c => {
+      cols = Math.max(cols, c);
+    });
+    return { levels, cols };
+  }, [naturalPos]);
+
+  const gap = useMemo(() => {
+    if (!graphBox.w || !graphBox.h || !shape.levels || !shape.cols) {
+      return { x: GAP_X, y: GAP_Y };
+    }
+    const freeX = (graphBox.w - PAD * 2 - shape.cols * NODE_W) / Math.max(1, shape.cols - 1);
+    const freeY = (graphBox.h - PAD * 2 - shape.levels * NODE_H) / Math.max(1, shape.levels - 1);
+    return {
+      x: Math.max(GAP_X, Math.min(GAP_MAX_X, freeX)),
+      y: Math.max(GAP_Y, Math.min(GAP_MAX_Y, freeY)),
+    };
+  }, [graphBox, shape]);
+
+  const pos = useMemo(
+    () => (gap.x === GAP_X && gap.y === GAP_Y ? naturalPos : computeLayout(spec, gap.x, gap.y)),
+    [naturalPos, gap.x, gap.y, spec]
+  );
 
   const [step, setStep] = useState(-1);
   const [playing, setPlaying] = useState(false);
   const timerRef = useRef<number | null>(null);
   const msgsScrollRef = useRef<HTMLDivElement | null>(null);
   const wasLiveRef = useRef(live);
+
+  // Conclusion card deck: slide 0 = consultation record, slide 1 = the final
+  // conclusion. Once a final answer exists the record pane becomes a
+  // swipeable card deck; dragging tracks a px offset for a rubber-band feel.
+  const [slide, setSlide] = useState(0);
+  const [dragDx, setDragDx] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const dragState = useRef<{ startX: number; startY: number; engaged: boolean } | null>(null);
+
+  const conclusion = step >= 0 && runTrace?.final_answer ? runTrace.final_answer : null;
+
+  // A fresh payload means a new run: always land back on the record card.
+  useEffect(() => {
+    setSlide(0);
+    setDragDx(0);
+    setDragging(false);
+    dragState.current = null;
+  }, [trace]);
+
+  // The conclusion card exists only while a final answer is on screen
+  // (scrubbing back to step -1 removes it): never stay parked on slide 2.
+  useEffect(() => {
+    if (!conclusion) {
+      setSlide(0);
+      setDragDx(0);
+    }
+  }, [conclusion]);
+
+  // Horizontal swipe between the record card and the conclusion card. The
+  // gesture engages only on a clearly horizontal move so vertical scrolling
+  // and text selection inside the cards keep working.
+  const onSwipeDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!conclusion || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    dragState.current = { startX: e.clientX, startY: e.clientY, engaged: false };
+  };
+  const onSwipeMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragState.current;
+    if (!st) return;
+    const dx = e.clientX - st.startX;
+    const dy = e.clientY - st.startY;
+    if (!st.engaged) {
+      if (Math.abs(dx) < 10 || Math.abs(dx) <= Math.abs(dy)) return;
+      st.engaged = true;
+      setDragging(true);
+      e.currentTarget.setPointerCapture(e.pointerId);
+    }
+    const atEdge = (slide === 0 && dx > 0) || (slide === 1 && dx < 0);
+    setDragDx(atEdge ? dx * 0.3 : dx);
+  };
+  const onSwipeEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragState.current;
+    dragState.current = null;
+    if (st?.engaged) {
+      const dx = e.clientX - st.startX;
+      if (dx <= -60 && slide === 0) setSlide(1);
+      else if (dx >= 60 && slide === 1) setSlide(0);
+    }
+    setDragging(false);
+    setDragDx(0);
+  };
 
   // Step policy:
   //  - live run: always follow the newest event as it streams in;
@@ -272,20 +388,32 @@ export function AgentFlowViz({
     return out;
   }, [events, nodeById]);
 
-  const visibleMessages = useMemo(
-    () => messages.filter(m => m.eventIdx <= step),
-    [messages, step]
-  );
+  const visibleMessages = useMemo(() => messages.filter(m => m.eventIdx <= step), [messages, step]);
 
   const shownEvents = useMemo(() => events.slice(0, step + 1), [events, step]);
   const currentEvent = step >= 0 && step < events.length ? events[step] : null;
 
   const liveNode = currentEvent?.node ?? null;
-  // Node currently awaiting its LLM response: the engine emits node_start
-  // right before the model call and node_end when the response arrives, so
-  // the cube loader renders on this node for exactly the waiting window.
-  const waitingNodeId =
-    currentEvent?.type === 'node_start' ? currentEvent.node ?? null : null;
+
+  // Nodes whose node_start has been emitted but whose node_end / node_error
+  // has not arrived yet — every such node is still awaiting its LLM response.
+  // The engine now dispatches sibling agents of one tier in parallel, so a
+  // single last-event loader would miss concurrent waits: one loader renders
+  // per in-flight node. (node_replay / node_skip never emit node_start, so
+  // they can never count as in-flight.)
+  const inflightNodes = useMemo(() => {
+    const set = new Set<string>();
+    for (const ev of shownEvents) {
+      if (!ev.node) continue;
+      if (ev.type === 'node_start') {
+        set.add(ev.node);
+      } else if (ev.type === 'node_end' || ev.type === 'node_error') {
+        set.delete(ev.node);
+      }
+    }
+    return set;
+  }, [shownEvents]);
+
   const liveEdgeKey =
     currentEvent &&
     (currentEvent.type === 'edge' || currentEvent.type === 'route' || currentEvent.type === 'loop')
@@ -305,7 +433,17 @@ export function AgentFlowViz({
   const visitedNodes = useMemo(() => {
     const set = new Set<string>();
     for (const ev of shownEvents) {
-      if (ev.node) set.add(ev.node);
+      // node_skip marks a node that did NOT execute — never treat it as visited.
+      if (ev.node && ev.type !== 'node_skip') set.add(ev.node);
+    }
+    return set;
+  }, [shownEvents]);
+
+  // Nodes the engine explicitly skipped (routed elsewhere / no input received).
+  const skippedNodes = useMemo(() => {
+    const set = new Set<string>();
+    for (const ev of shownEvents) {
+      if (ev.type === 'node_skip' && ev.node) set.add(ev.node);
     }
     return set;
   }, [shownEvents]);
@@ -335,8 +473,15 @@ export function AgentFlowViz({
     return max + PAD * 2;
   }, [pos]);
 
-  const tokenTotal =
-    (runTrace?.prompt_tokens ?? 0) + (runTrace?.completion_tokens ?? 0);
+  // Shrink-to-fit fallback for graphs that remain larger than the pane even
+  // at the base gaps (dense specs, narrow viewports). Never upscales — gap
+  // stretching already handles filling.
+  const fitScale = useMemo(() => {
+    if (!graphBox.w || !graphBox.h || !svgWidth || !svgHeight) return 1;
+    return Math.max(0.2, Math.min(1, graphBox.w / svgWidth, graphBox.h / svgHeight));
+  }, [graphBox, svgWidth, svgHeight]);
+
+  const tokenTotal = (runTrace?.prompt_tokens ?? 0) + (runTrace?.completion_tokens ?? 0);
   const maxRound = runTrace?.rounds ?? 0;
 
   const onReset = () => {
@@ -400,8 +545,10 @@ export function AgentFlowViz({
         .afv-flow { stroke-dasharray: 5 6; animation: afvFlow 0.7s linear infinite; }
         .afv-pulse { animation: afvPulse 1.1s ease-in-out infinite; }
         /* Split layout: data-flow graph (left) + consultation record (right).
-           Narrow viewports stack the two panes vertically. */
-        .afv-split { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+           Narrow viewports stack the two panes vertically. flex-basis 0 lets
+           the split fill the modal card below the header and stats strip
+           (the card has a definite height). */
+        .afv-split { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow-y: auto; }
         .afv-left { display: flex; flex-direction: column; min-width: 0; background: ${C.canvas}; }
         .afv-right {
           display: flex; flex-direction: column; min-width: 0;
@@ -419,6 +566,12 @@ export function AgentFlowViz({
           .afv-left { flex: 0 0 55%; overflow: hidden; border-right: 1px solid ${C.hairline}; }
           .afv-right { flex: 1 1 45%; max-height: none; border-top: none; }
         }
+        /* Slim scrollbars for the record and conclusion scroll areas. */
+        .afv-hairscroll { scrollbar-width: thin; scrollbar-color: ${C.hairline} transparent; }
+        .afv-hairscroll::-webkit-scrollbar { width: 8px; height: 8px; }
+        .afv-hairscroll::-webkit-scrollbar-track { background: transparent; }
+        .afv-hairscroll::-webkit-scrollbar-thumb { background: ${C.hairline}; border-radius: 4px; }
+        .afv-hairscroll::-webkit-scrollbar-thumb:hover { background: ${C.stone}; }
       `}</style>
 
       <div
@@ -490,10 +643,16 @@ export function AgentFlowViz({
                 </span>
               ) : (
                 <>
-                  <button onClick={onTogglePlay} style={btnPrimary()}>
+                  <button
+                    onClick={onTogglePlay}
+                    style={btnPrimary()}
+                  >
                     {playing ? '暂停' : done ? '重播' : '播放'}
                   </button>
-                  <button onClick={onReset} style={btnOutlineDark()}>
+                  <button
+                    onClick={onReset}
+                    style={btnOutlineDark()}
+                  >
                     重置
                   </button>
                   <button
@@ -583,142 +742,221 @@ export function AgentFlowViz({
         <div className="afv-split">
           {/* Left pane: the data-flow visualization */}
           <div className="afv-left">
-        {/* ---- Doctor graph (the real data-flow stream) ---- */}
-        <div style={{ flex: '1 1 auto', minHeight: 0, overflow: 'auto', padding: 12, background: C.canvas }}>
-          <div style={{ position: 'relative', width: svgWidth, margin: '0 auto' }}>
-          <svg
-            viewBox={`0 0 ${svgWidth} ${svgHeight}`}
-            width={svgWidth}
-            height={svgHeight}
-            style={{ display: 'block' }}
-          >
-            <defs>
-              <marker id="afvArrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-                <path d="M0,0 L8,3 L0,6 Z" fill={C.hairline} />
-              </marker>
-              <marker id="afvArrowOn" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto" markerUnits="userSpaceOnUse">
-                <path d="M0,0 L8,3 L0,6 Z" fill={C.primary} />
-              </marker>
-            </defs>
-
-            {edgeDefs.map(e => {
-              const key = `${e.src}>${e.dst}`;
-              const flowed = flowedEdges.has(key);
-              const live = liveEdgeKey === key;
-              return (
-                <React.Fragment key={key}>
-                  <path
-                    d={e.d}
-                    fill="none"
-                    stroke={live || flowed ? C.primary : C.ash}
-                    strokeWidth={live ? 2.4 : flowed ? 1.8 : 1.2}
-                    strokeDasharray={e.loop ? '5 4' : undefined}
-                    markerEnd={flowed || live ? 'url(#afvArrowOn)' : 'url(#afvArrow)'}
-                    style={{ transition: 'stroke 0.2s, stroke-width 0.2s' }}
-                  />
-                  {/* Animated data stream on the live edge */}
-                  {live && (
-                    <path
-                      d={e.d}
-                      fill="none"
-                      stroke={C.ink}
-                      strokeWidth={1.6}
-                      className="afv-flow"
-                    />
-                  )}
-                </React.Fragment>
-              );
-            })}
-
-            {/* Travelling data packet on the live edge */}
-            {liveEdgeKey &&
-              edgeDefs.some(e => `${e.src}>${e.dst}` === liveEdgeKey) && (
-                <circle r="3" fill={C.primary}>
-                  <animateMotion
-                    dur="0.6s"
-                    repeatCount="indefinite"
-                    path={edgeDefs.find(e => `${e.src}>${e.dst}` === liveEdgeKey)!.d}
-                  />
-                </circle>
-              )}
-
-            {spec.nodes.map(n => {
-              const p = pos.get(n.id);
-              if (!p) return null;
-              const meta = kindMeta(n.kind);
-              const live = liveNode === n.id;
-              const visited = visitedNodes.has(n.id);
-              const dimmed = !visited && step >= 0;
-              const title = `${n.name} (${meta.label})`;
-              return (
-                <g key={n.id} style={{ cursor: 'pointer' }}>
-                  <title>{title}</title>
-                  <rect
-                    x={p.x}
-                    y={p.y}
-                    width={NODE_W}
-                    height={NODE_H}
-                    rx={2}
-                    fill={live ? 'rgba(118,185,0,0.10)' : C.canvas}
-                    stroke={live ? C.primary : C.hairline}
-                    strokeWidth={live ? 2 : 1}
-                    strokeDasharray={n.kind === 'blackboard' ? '4 4' : undefined}
-                    className={live ? 'afv-pulse' : undefined}
-                    style={{ transition: 'fill 0.2s, stroke 0.2s', opacity: dimmed ? 0.5 : 1 }}
-                  />
-                  <rect
-                    x={p.x}
-                    y={p.y}
-                    width={3}
-                    height={NODE_H}
-                    fill={meta.color}
-                    opacity={visited || live ? 1 : 0.3}
-                  />
-                  <text
-                    x={p.x + 4 + (NODE_W - 4) / 2}
-                    y={p.y + NODE_H / 2 - 2}
-                    textAnchor="middle"
-                    fontSize={11.5}
-                    fontWeight={700}
-                    fill={C.ink}
-                  >
-                    {shortName(n.name)}
-                  </text>
-                  <text
-                    x={p.x + 4 + (NODE_W - 4) / 2}
-                    y={p.y + NODE_H / 2 + 14}
-                    textAnchor="middle"
-                    fontSize={9.5}
-                    fill={n.kind === 'io' || n.kind === 'blackboard' ? C.mute : meta.color}
-                  >
-                    {meta.label}
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
-            {/* Cube loader pinned to the node that is waiting for its LLM
-                response; it disappears the moment node_end arrives. */}
-            {waitingNodeId && pos.get(waitingNodeId) && (
+            {/* ---- Doctor graph (the real data-flow stream) ---- */}
+            <div
+              ref={graphBoxRef}
+              style={{
+                flex: '1 1 auto',
+                minHeight: 0,
+                overflow: 'auto',
+                padding: 12,
+                background: C.canvas,
+                display: 'flex',
+              }}
+            >
               <div
                 style={{
-                  position: 'absolute',
-                  left: pos.get(waitingNodeId)!.x + NODE_W - 21,
-                  top: pos.get(waitingNodeId)!.y - 21,
-                  width: 42,
-                  height: 42,
-                  pointerEvents: 'none',
+                  position: 'relative',
+                  width: svgWidth * fitScale,
+                  height: svgHeight * fitScale,
+                  margin: 'auto',
+                  flex: '0 0 auto',
                 }}
               >
-                <LoadingCubes size={3} />
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: svgWidth,
+                    height: svgHeight,
+                    transform: `scale(${fitScale})`,
+                    transformOrigin: 'top left',
+                  }}
+                >
+                  <svg
+                    viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+                    width={svgWidth}
+                    height={svgHeight}
+                    style={{ display: 'block' }}
+                  >
+                    <defs>
+                      <marker
+                        id="afvArrow"
+                        markerWidth="8"
+                        markerHeight="8"
+                        refX="7"
+                        refY="3"
+                        orient="auto"
+                        markerUnits="userSpaceOnUse"
+                      >
+                        <path
+                          d="M0,0 L8,3 L0,6 Z"
+                          fill={C.hairline}
+                        />
+                      </marker>
+                      <marker
+                        id="afvArrowOn"
+                        markerWidth="8"
+                        markerHeight="8"
+                        refX="7"
+                        refY="3"
+                        orient="auto"
+                        markerUnits="userSpaceOnUse"
+                      >
+                        <path
+                          d="M0,0 L8,3 L0,6 Z"
+                          fill={C.primary}
+                        />
+                      </marker>
+                    </defs>
+
+                    {edgeDefs.map(e => {
+                      const key = `${e.src}>${e.dst}`;
+                      const flowed = flowedEdges.has(key);
+                      const live = liveEdgeKey === key;
+                      return (
+                        <React.Fragment key={key}>
+                          <path
+                            d={e.d}
+                            fill="none"
+                            stroke={live || flowed ? C.primary : C.ash}
+                            strokeWidth={live ? 2.4 : flowed ? 1.8 : 1.2}
+                            strokeDasharray={e.loop ? '5 4' : undefined}
+                            markerEnd={flowed || live ? 'url(#afvArrowOn)' : 'url(#afvArrow)'}
+                            style={{ transition: 'stroke 0.2s, stroke-width 0.2s' }}
+                          />
+                          {/* Animated data stream on the live edge */}
+                          {live && (
+                            <path
+                              d={e.d}
+                              fill="none"
+                              stroke={C.ink}
+                              strokeWidth={1.6}
+                              className="afv-flow"
+                            />
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+
+                    {/* Travelling data packet on the live edge */}
+                    {liveEdgeKey && edgeDefs.some(e => `${e.src}>${e.dst}` === liveEdgeKey) && (
+                      <circle
+                        r="3"
+                        fill={C.primary}
+                      >
+                        <animateMotion
+                          dur="0.6s"
+                          repeatCount="indefinite"
+                          path={edgeDefs.find(e => `${e.src}>${e.dst}` === liveEdgeKey)!.d}
+                        />
+                      </circle>
+                    )}
+
+                    {spec.nodes.map(n => {
+                      const p = pos.get(n.id);
+                      if (!p) return null;
+                      const meta = kindMeta(n.kind);
+                      // Active = awaiting its LLM response (in-flight set) or
+                      // the node of the very last event — so every parallel
+                      // sibling pulses in green while it works, not just one.
+                      const active = inflightNodes.has(n.id) || liveNode === n.id;
+                      const visited = visitedNodes.has(n.id);
+                      const skipped = skippedNodes.has(n.id);
+                      const dimmed = (!visited && step >= 0) || skipped;
+                      const title = `${n.name} (${meta.label}${skipped ? ' · 未接收到输入，已跳过' : ''})`;
+                      return (
+                        <g
+                          key={n.id}
+                          style={{ cursor: 'pointer' }}
+                        >
+                          <title>{title}</title>
+                          <rect
+                            x={p.x}
+                            y={p.y}
+                            width={NODE_W}
+                            height={NODE_H}
+                            rx={2}
+                            fill={active ? 'rgba(118,185,0,0.10)' : C.canvas}
+                            stroke={active ? C.primary : C.hairline}
+                            strokeWidth={active ? 2 : 1}
+                            strokeDasharray={n.kind === 'blackboard' || skipped ? '4 4' : undefined}
+                            className={active ? 'afv-pulse' : undefined}
+                            style={{
+                              transition: 'fill 0.2s, stroke 0.2s',
+                              opacity: dimmed ? 0.5 : 1,
+                            }}
+                          />
+                          <rect
+                            x={p.x}
+                            y={p.y}
+                            width={3}
+                            height={NODE_H}
+                            fill={meta.color}
+                            opacity={visited || active ? 1 : 0.3}
+                          />
+                          <text
+                            x={p.x + 4 + (NODE_W - 4) / 2}
+                            y={p.y + NODE_H / 2 - 2}
+                            textAnchor="middle"
+                            fontSize={11.5}
+                            fontWeight={700}
+                            fill={C.ink}
+                          >
+                            {shortName(n.name)}
+                          </text>
+                          <text
+                            x={p.x + 4 + (NODE_W - 4) / 2}
+                            y={p.y + NODE_H / 2 + 14}
+                            textAnchor="middle"
+                            fontSize={9.5}
+                            fill={
+                              skipped
+                                ? C.mute
+                                : n.kind === 'io' || n.kind === 'blackboard'
+                                  ? C.mute
+                                  : meta.color
+                            }
+                          >
+                            {skipped ? '跳过' : meta.label}
+                          </text>
+                        </g>
+                      );
+                    })}
+                  </svg>
+                  {/* Cube loaders pinned to every node that is still awaiting
+                      its LLM response (one per in-flight agent — sibling
+                      agents of a tier run in parallel, so several loaders can
+                      spin at once). They disappear when each node_end arrives. */}
+                  {live &&
+                    [...inflightNodes].map(nid => {
+                      const p = pos.get(nid);
+                      if (!p) return null;
+                      return (
+                        <div
+                          key={nid}
+                          style={{
+                            position: 'absolute',
+                            left: p.x + NODE_W - 21,
+                            top: p.y - 21,
+                            width: 42,
+                            height: 42,
+                            pointerEvents: 'none',
+                          }}
+                        >
+                          <LoadingCubes size={3} />
+                        </div>
+                      );
+                    })}
+                </div>
               </div>
-            )}
-          </div>
-        </div>
+            </div>
           </div>
 
-          {/* Right pane: consultation record (会诊记录) — one scrollable card
-              per agent output. */}
+          {/* Right pane: consultation record (会诊记录) as a swipeable card
+              deck — slide 1: agent transcript; slide 2 (once produced): the
+              final conclusion. */}
           <div className="afv-right">
             <div
               style={{
@@ -734,63 +972,234 @@ export function AgentFlowViz({
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 <span style={{ width: 8, height: 8, background: C.primary, flex: '0 0 auto' }} />
-                <span style={{ color: C.ink, fontSize: 12.5, fontWeight: 700, whiteSpace: 'nowrap' }}>
-                  会诊记录
-                </span>
-                <span style={{ color: C.mute, fontSize: 11, whiteSpace: 'nowrap' }}>
-                  {visibleMessages.length}/{messages.length} 条意见
-                </span>
-              </div>
-              {live && (
                 <span
-                  style={{
-                    display: 'inline-flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    color: C.primary,
-                    fontSize: 10.5,
-                    fontWeight: 700,
-                    whiteSpace: 'nowrap',
-                  }}
+                  style={{ color: C.ink, fontSize: 12.5, fontWeight: 700, whiteSpace: 'nowrap' }}
                 >
+                  {conclusion && slide === 1 ? '最终结论' : '会诊记录'}
+                </span>
+                {(!conclusion || slide === 0) && (
+                  <span style={{ color: C.mute, fontSize: 11, whiteSpace: 'nowrap' }}>
+                    {visibleMessages.length}/{messages.length} 条意见
+                  </span>
+                )}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: '0 0 auto' }}>
+                {live && (
                   <span
                     style={{
-                      width: 6,
-                      height: 6,
-                      background: C.primary,
-                      display: 'inline-block',
-                      animation: 'afvPulse 1.1s ease-in-out infinite',
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      color: C.primary,
+                      fontSize: 10.5,
+                      fontWeight: 700,
+                      whiteSpace: 'nowrap',
                     }}
-                  />
-                  实时接收中
-                </span>
-              )}
+                  >
+                    <span
+                      style={{
+                        width: 6,
+                        height: 6,
+                        background: C.primary,
+                        display: 'inline-block',
+                        animation: 'afvPulse 1.1s ease-in-out infinite',
+                      }}
+                    />
+                    实时接收中
+                  </span>
+                )}
+                {conclusion && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button
+                      onClick={() => setSlide(0)}
+                      disabled={slide === 0}
+                      style={carBtn(slide === 0)}
+                      title="会诊记录"
+                    >
+                      ‹
+                    </button>
+                    {[0, 1].map(i => (
+                      <span
+                        key={i}
+                        onClick={() => setSlide(i)}
+                        title={i === 0 ? '会诊记录' : '最终结论'}
+                        style={{
+                          width: i === slide ? 14 : 6,
+                          height: 6,
+                          borderRadius: 3,
+                          background: i === slide ? C.primary : C.hairline,
+                          cursor: 'pointer',
+                          transition: 'all 0.25s ease',
+                        }}
+                      />
+                    ))}
+                    <button
+                      onClick={() => setSlide(1)}
+                      disabled={slide === 1}
+                      style={carBtn(slide === 1)}
+                      title="最终结论"
+                    >
+                      ›
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
 
+            {/* Card deck: the transcript is slide 1; once the run produced a
+                final answer it becomes slide 2 — drag horizontally or use the
+                arrows / dots in the header to move between the two. */}
             <div
-              ref={msgsScrollRef}
-              className="afv-cards"
+              style={{
+                flex: '1 1 auto',
+                minHeight: 0,
+                position: 'relative',
+                overflow: 'hidden',
+                cursor: conclusion ? (dragging ? 'grabbing' : 'grab') : 'default',
+                userSelect: dragging ? 'none' : undefined,
+                touchAction: 'pan-y',
+              }}
+              onPointerDown={onSwipeDown}
+              onPointerMove={onSwipeMove}
+              onPointerUp={onSwipeEnd}
+              onPointerCancel={onSwipeEnd}
             >
-              {visibleMessages.length === 0 && (
-                <div style={{ color: C.mute, fontSize: 11.5, padding: '8px 2px' }}>
-                  {live
-                    ? '正在等待各位医生接入会诊…事件到达后将实时展示。'
-                    : '点击「播放」查看每位医生实际输出的内容，以及它们在医生之间如何流转。'}
-                </div>
-              )}
-              {visibleMessages.map((m, i) => {
-                const isLast = i === visibleMessages.length - 1;
-                const isLiveCard = live && isLast;
-                return (
+              <div
+                style={{
+                  display: 'flex',
+                  height: '100%',
+                  width: conclusion ? '200%' : '100%',
+                  transform: `translateX(calc(${conclusion ? -slide * 50 : 0}% + ${dragDx}px))`,
+                  transition: dragging
+                    ? 'none'
+                    : 'transform 320ms cubic-bezier(0.22, 0.61, 0.36, 1)',
+                }}
+              >
+                {/* Slide 1 — one scrollable card per agent output */}
+                <div
+                  style={{
+                    width: conclusion ? '50%' : '100%',
+                    flex: '0 0 auto',
+                    minWidth: 0,
+                    height: '100%',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    minHeight: 0,
+                  }}
+                >
                   <div
-                    key={m.key}
+                    ref={msgsScrollRef}
+                    className="afv-cards afv-hairscroll"
+                  >
+                    {visibleMessages.length === 0 && (
+                      <div style={{ color: C.mute, fontSize: 11.5, padding: '8px 2px' }}>
+                        {live
+                          ? '正在等待各位医生接入会诊…事件到达后将实时展示。'
+                          : '点击「播放」查看每位医生实际输出的内容，以及它们在医生之间如何流转。'}
+                      </div>
+                    )}
+                    {visibleMessages.map((m, i) => {
+                      const isLast = i === visibleMessages.length - 1;
+                      const isLiveCard = live && isLast;
+                      return (
+                        <div
+                          key={m.key}
+                          style={{
+                            background: C.canvas,
+                            border: `1px solid ${isLiveCard ? C.primary : C.hairline}`,
+                            borderLeft: `3px solid ${m.color}`,
+                            borderRadius: 2,
+                            padding: '10px 12px',
+                            flex: '0 0 auto',
+                            boxShadow: isLiveCard
+                              ? `0 0 0 1px ${C.primary}22, 0 2px 10px rgba(0,0,0,0.08)`
+                              : 'none',
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 8,
+                              marginBottom: 6,
+                              flexWrap: 'wrap',
+                            }}
+                          >
+                            <span style={{ color: C.ink, fontSize: 13, fontWeight: 700 }}>
+                              {m.name}
+                            </span>
+                            <span
+                              style={{
+                                color: m.kind === 'io' ? C.mute : m.color,
+                                background: m.kind === 'io' ? 'transparent' : `${m.color}14`,
+                                fontSize: 9.5,
+                                fontWeight: 700,
+                                letterSpacing: 0.4,
+                                border: `1px solid ${m.kind === 'io' ? C.hairline : `${m.color}55`}`,
+                                borderRadius: 2,
+                                padding: '1px 6px',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {kindMeta(m.kind).label}
+                            </span>
+                            <span
+                              style={{
+                                color: C.mute,
+                                fontSize: 9.5,
+                                border: `1px solid ${C.hairline}`,
+                                borderRadius: 2,
+                                padding: '1px 6px',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              第{m.round + 1}轮
+                            </span>
+                            <span
+                              style={{
+                                marginLeft: 'auto',
+                                color: C.mute,
+                                fontSize: 9.5,
+                                fontVariantNumeric: 'tabular-nums',
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              {isLiveCard ? '● ' : ''}
+                              {m.pt + m.ct > 0 ? `↑${fmt(m.pt)} ↓${fmt(m.ct)}` : ''}
+                            </span>
+                          </div>
+                          {m.content ? (
+                            <MarkdownText
+                              text={m.content}
+                              style={{
+                                color: C.body,
+                                fontSize: 12,
+                                lineHeight: 1.65,
+                                maxHeight: 420,
+                                overflowY: 'auto',
+                              }}
+                            />
+                          ) : (
+                            <div style={{ color: C.mute, fontSize: 11.5 }}>（无文本输出）</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Slide 2 — the final conclusion, on its own dark result card */}
+                {conclusion && (
+                  <div
                     style={{
-                      background: C.canvas,
-                      border: `1px solid ${isLiveCard ? C.primary : C.hairline}`,
-                      borderLeft: `3px solid ${m.color}`,
-                      borderRadius: 2,
-                      padding: '10px 12px',
+                      width: '50%',
                       flex: '0 0 auto',
+                      minWidth: 0,
+                      height: '100%',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      minHeight: 0,
+                      background: C.surfaceDark,
                     }}
                   >
                     <div
@@ -798,96 +1207,70 @@ export function AgentFlowViz({
                         display: 'flex',
                         alignItems: 'center',
                         gap: 8,
-                        marginBottom: 6,
-                        flexWrap: 'wrap',
+                        padding: '10px 12px',
+                        borderBottom: `1px solid ${C.hairlineStrong}`,
+                        flex: '0 0 auto',
                       }}
                     >
-                      <span style={{ color: C.ink, fontSize: 13, fontWeight: 700 }}>{m.name}</span>
                       <span
-                        style={{
-                          color: m.kind === 'io' ? C.mute : m.color,
-                          fontSize: 9.5,
-                          fontWeight: 700,
-                          letterSpacing: 0.4,
-                          border: `1px solid ${C.hairline}`,
-                          borderRadius: 2,
-                          padding: '1px 6px',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        {kindMeta(m.kind).label}
-                      </span>
-                      <span
-                        style={{
-                          color: C.mute,
-                          fontSize: 9.5,
-                          border: `1px solid ${C.hairline}`,
-                          borderRadius: 2,
-                          padding: '1px 6px',
-                          whiteSpace: 'nowrap',
-                        }}
-                      >
-                        第{m.round + 1}轮
+                        style={{ width: 8, height: 8, background: C.primary, flex: '0 0 auto' }}
+                      />
+                      <span style={{ color: C.onDark, fontSize: 12.5, fontWeight: 700 }}>
+                        最终结论
                       </span>
                       <span
                         style={{
                           marginLeft: 'auto',
-                          color: C.mute,
-                          fontSize: 9.5,
-                          fontVariantNumeric: 'tabular-nums',
+                          color: C.onDarkMute,
+                          fontSize: 10,
                           whiteSpace: 'nowrap',
                         }}
                       >
-                        {isLiveCard ? '● ' : ''}
-                        {m.pt + m.ct > 0 ? `↑${fmt(m.pt)} ↓${fmt(m.ct)}` : ''}
+                        AI 生成 · 仅供临床参考
                       </span>
                     </div>
-                    {m.content ? (
+                    <div
+                      className="afv-hairscroll"
+                      style={{
+                        flex: '1 1 auto',
+                        minHeight: 0,
+                        overflowY: 'auto',
+                        padding: '12px 14px',
+                      }}
+                    >
                       <MarkdownText
-                        text={m.content}
-                        style={{
-                          color: C.body,
-                          fontSize: 12,
-                          lineHeight: 1.65,
-                          maxHeight: 320,
-                          overflowY: 'auto',
-                        }}
+                        text={conclusion}
+                        style={{ color: C.onDark, fontSize: 12.5, lineHeight: 1.7 }}
                       />
-                    ) : (
-                      <div style={{ color: C.mute, fontSize: 11.5 }}>（无文本输出）</div>
-                    )}
+                    </div>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-
-        {/* ---- Final conclusion (dark chapter) ---- */}
-        <div style={{ background: C.surfaceDark, padding: '14px 16px', flex: '0 0 auto' }}>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-            <span style={{ width: 10, height: 10, background: C.primary, flex: '0 0 auto', marginTop: 3 }} />
-            <div style={{ minWidth: 0 }}>
-              <div
-                style={{
-                  color: C.primary,
-                  fontWeight: 700,
-                  fontSize: 11,
-                  letterSpacing: 1,
-                  textTransform: 'uppercase',
-                  marginBottom: 4,
-                }}
-              >
-                最终结论
+                )}
               </div>
-              {step >= 0 && runTrace?.final_answer ? (
-                <MarkdownText
-                  text={runTrace.final_answer}
-                  style={{ color: C.onDark, fontSize: 12.5, lineHeight: 1.65 }}
-                />
-              ) : (
-                <div style={{ color: C.onDarkMute, fontSize: 12.5 }}>
-                  {live ? '会诊进行中…' : step >= 0 ? '—' : '尚未完成会诊'}
+
+              {/* Floating jump pill on the record slide once the conclusion exists */}
+              {conclusion && slide === 0 && (
+                <div
+                  onClick={() => setSlide(1)}
+                  style={{
+                    position: 'absolute',
+                    right: 14,
+                    bottom: 12,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    background: C.surfaceDark,
+                    color: C.primary,
+                    border: `1px solid ${C.primary}`,
+                    borderRadius: 2,
+                    padding: '6px 10px',
+                    fontSize: 11,
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                    boxShadow: '0 2px 10px rgba(0,0,0,0.25)',
+                    fontFamily: FONT,
+                  }}
+                >
+                  查看最终结论 →
                 </div>
               )}
             </div>
@@ -901,6 +1284,26 @@ export function AgentFlowViz({
 /* ------------------------------------------------------------------------ *
  * Presentational helpers
  * ------------------------------------------------------------------------ */
+function carBtn(disabled: boolean): React.CSSProperties {
+  return {
+    background: 'transparent',
+    color: disabled ? C.ash : C.ink,
+    border: `1px solid ${C.hairline}`,
+    borderRadius: 2,
+    width: 22,
+    height: 22,
+    padding: 0,
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontSize: 14,
+    fontWeight: 700,
+    lineHeight: 1,
+    cursor: disabled ? 'default' : 'pointer',
+    fontFamily: FONT,
+  };
+}
+
 function btnPrimary(): React.CSSProperties {
   return {
     background: C.primary,
@@ -1047,124 +1450,173 @@ export function AgentFlowVizModal({
       `}</style>
       <div
         onClick={onClose}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        zIndex: 1200,
-        background: 'rgba(0,0,0,0.78)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 24,
-        fontFamily: FONT,
-      }}
-    >
-      <div
-        onClick={e => e.stopPropagation()}
         style={{
-          background: C.surfaceDark,
-          border: `1px solid ${C.hairlineStrong}`,
-          borderRadius: 2,
-          width: 'min(1240px, 100%)',
-          maxHeight: 'calc(100vh - 48px)',
+          position: 'fixed',
+          inset: 0,
+          zIndex: 1200,
+          background: 'rgba(0,0,0,0.78)',
           display: 'flex',
-          flexDirection: 'column',
-          boxShadow: '0 0 40px rgba(0,0,0,0.55)',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 24,
+          fontFamily: FONT,
         }}
       >
-        {/* ---- Modal title bar (dark chapter) ---- */}
         <div
+          onClick={e => e.stopPropagation()}
           style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 10,
-            padding: '12px 16px',
-            borderBottom: `1px solid ${C.hairlineStrong}`,
-            flex: '0 0 auto',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
-            <span style={{ width: 12, height: 12, background: C.primary, flex: '0 0 auto' }} />
-            <div style={{ minWidth: 0 }}>
-              <div
-                style={{
-                  color: C.onDark,
-                  fontWeight: 700,
-                  fontSize: 14,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                智能体会诊数据流
-              </div>
-              <div
-                style={{
-                  color: C.onDarkMute,
-                  fontSize: 11,
-                  whiteSpace: 'nowrap',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                }}
-              >
-                {specName || '正在启动会诊…'}
-                {strategyLabel ? ` · ${strategyLabel}` : ''} ·{' '}
-                {live ? '实时数据流动' : '真实数据流动回放'}
-              </div>
-            </div>
-          </div>
-          <button onClick={onClose} style={btnClose()} title="关闭 (Esc)">
-            ✕
-          </button>
-        </div>
-
-        {/* ---- Body: left pane (data-flow) and right pane (consultation
-              record) each scroll independently ---- */}
-        <div
-          style={{
-            overflow: 'hidden',
-            flex: '1 1 auto',
-            minHeight: 0,
+            background: C.surfaceDark,
+            border: `1px solid ${C.hairlineStrong}`,
+            borderRadius: 2,
+            width: 'min(1240px, 100%)',
+            // Definite height (not just max-height): the children split the card
+            // 50/50 via flex-basis 0, which needs a definite container height to
+            // resolve against — otherwise the whole card collapses to content.
+            height: 'calc(100vh - 48px)',
             display: 'flex',
             flexDirection: 'column',
-            background: C.surfaceDark,
+            boxShadow: '0 0 40px rgba(0,0,0,0.55)',
           }}
         >
-          {trace ? (
-            <AgentFlowViz trace={trace} live={live} autoPlay={!live} />
-          ) : (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 14,
-                padding: '72px 24px',
-                overflowY: 'auto',
-                flex: '1 1 auto',
-                minHeight: 0,
-              }}
-            >
-              <span
-                style={{
-                  width: 16,
-                  height: 16,
-                  background: C.primary,
-                  animation: 'afvPulse 1.1s ease-in-out infinite',
-                }}
-              />
-              <div style={{ color: C.onDark, fontWeight: 700, fontSize: 14 }}>
-                正在建立智能体会诊…
-              </div>
-              <div style={{ color: C.onDarkMute, fontSize: 12 }}>
-                各科医生接入后，这里将实时展示数据的真实流动。
+          {/* ---- Modal title bar (dark chapter) ---- */}
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 10,
+              padding: '12px 16px',
+              borderBottom: `1px solid ${C.hairlineStrong}`,
+              flex: '0 0 auto',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+              <span style={{ width: 12, height: 12, background: C.primary, flex: '0 0 auto' }} />
+              <div style={{ minWidth: 0 }}>
+                <div
+                  style={{
+                    color: C.onDark,
+                    fontWeight: 700,
+                    fontSize: 14,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  智能体会诊数据流
+                </div>
+                <div
+                  style={{
+                    color: C.onDarkMute,
+                    fontSize: 11,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {specName || '正在启动会诊…'}
+                  {strategyLabel ? ` · ${strategyLabel}` : ''} ·{' '}
+                  {live ? '实时数据流动' : '真实数据流动回放'}
+                </div>
               </div>
             </div>
-          )}
+            <button
+              onClick={onClose}
+              style={btnClose()}
+              title="关闭 (Esc)"
+            >
+              ✕
+            </button>
+          </div>
+
+          {/* ---- Body: left pane (data-flow) and right pane (consultation
+              record) each scroll independently ---- */}
+          <div
+            style={{
+              overflow: 'hidden',
+              flex: '1 1 auto',
+              minHeight: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              background: C.surfaceDark,
+            }}
+          >
+            {trace?.status === 'error' && (
+              <div
+                style={{
+                  margin: '10px 14px 0',
+                  padding: '10px 14px',
+                  borderRadius: 2,
+                  border: '1px solid rgba(239, 68, 68, 0.45)',
+                  background: 'rgba(127, 29, 29, 0.35)',
+                  color: '#fecaca',
+                  fontSize: 12.5,
+                  lineHeight: 1.55,
+                  flex: '0 0 auto',
+                  maxHeight: 132,
+                  overflowY: 'auto',
+                  wordBreak: 'break-word',
+                }}
+              >
+                <strong style={{ color: '#f87171' }}>会话失败：</strong>
+                {trace.error || '上游服务返回错误，本次会话已中止。'}
+              </div>
+            )}
+            {trace?.status === 'cancelled' && (
+              <div
+                style={{
+                  margin: '10px 14px 0',
+                  padding: '10px 14px',
+                  borderRadius: 2,
+                  border: '1px solid rgba(234, 179, 8, 0.4)',
+                  background: 'rgba(120, 53, 15, 0.3)',
+                  color: '#fde68a',
+                  fontSize: 12.5,
+                  lineHeight: 1.55,
+                  flex: '0 0 auto',
+                }}
+              >
+                本次会话已取消（被新发起的会话取代）。
+              </div>
+            )}
+            {trace ? (
+              <AgentFlowViz
+                trace={trace}
+                live={live}
+                autoPlay={!live}
+              />
+            ) : (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 14,
+                  padding: '72px 24px',
+                  overflowY: 'auto',
+                  flex: '1 1 auto',
+                  minHeight: 0,
+                }}
+              >
+                <span
+                  style={{
+                    width: 16,
+                    height: 16,
+                    background: C.primary,
+                    animation: 'afvPulse 1.1s ease-in-out infinite',
+                  }}
+                />
+                <div style={{ color: C.onDark, fontWeight: 700, fontSize: 14 }}>
+                  正在建立智能体会诊…
+                </div>
+                <div style={{ color: C.onDarkMute, fontSize: 12 }}>
+                  各科医生接入后，这里将实时展示数据的真实流动。
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
       </div>
     </>
   );

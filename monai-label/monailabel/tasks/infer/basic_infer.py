@@ -1279,6 +1279,26 @@ _CUSTOM_ENDPOINT_TYPES = ("openai-responses", "openai-chat", "anthropic")
 _CUSTOM_ENV_BASE_URL = "CUSTOM_VLM_BASE_URL"
 _CUSTOM_ENV_API_KEY = "CUSTOM_VLM_API_KEY"
 
+# Request timeout for LLM/VLM upstream calls that carry medical images.
+# Multi-image studies make upstream prefill slow, so the per-request budget
+# must be generous. Tune per deployment via MONAI_LABEL_LLM_TIMEOUT_SECONDS
+# (e.g. 3600 for very large studies); keep it below the reverse-proxy read
+# timeout in front of this server (nginx /monai/ is 2400s) or the proxy —
+# not the model — cuts the request first.
+_LLM_TIMEOUT_ENV = "MONAI_LABEL_LLM_TIMEOUT_SECONDS"
+_LLM_TIMEOUT_DEFAULT_SECONDS = 1800.0
+
+
+def _llm_timeout() -> float:
+    """Per-request upstream timeout (seconds), env-overridable."""
+    raw = os.environ.get(_LLM_TIMEOUT_ENV)
+    if raw:
+        try:
+            return max(60.0, float(raw))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid %s=%r", _LLM_TIMEOUT_ENV, raw)
+    return _LLM_TIMEOUT_DEFAULT_SECONDS
+
 
 def _custom_endpoint_type(data: Dict[str, Any]) -> str:
     """Normalise ``custom_endpoint_type``: openai-responses | openai-chat | anthropic."""
@@ -1320,6 +1340,32 @@ def _custom_text_content(instruction: str, query: str) -> str:
     return f"{instruction}\n\n{query}" if instruction else query
 
 
+# Cloud VLMs (OpenAI-compatible / Anthropic gateways) reject or time out on
+# requests that carry hundreds of base64 slice payloads. A full CT volume can
+# be 300-600 slices — several tens of MB as inline ``image_url`` data URLs —
+# and the MAS layer re-sends that whole payload to *every* agent on round 0,
+# so an N-agent run multiplies the traffic N times. Gateways (e.g. an ALB with
+# a ~60-90 s timeout) then return 504 on the repeated multi-MB requests.
+# Cap the number of slices forwarded and sample uniformly so the payload stays
+# bounded and every agent still sees a representative sweep of the volume.
+_MAX_VLM_SLICES = int(os.environ.get("MONAI_LABEL_VLM_MAX_SLICES", "24") or "24")
+
+
+def _cap_slices(
+    slice_indices: List[int],
+    normalized_img_list: List[np.ndarray],
+) -> Tuple[List[int], List[np.ndarray]]:
+    """Uniformly downsample slices when they exceed the cloud-VLM slice cap."""
+    n = len(normalized_img_list)
+    if n <= _MAX_VLM_SLICES:
+        return slice_indices, normalized_img_list
+    picks = [round(i * (n - 1) / (_MAX_VLM_SLICES - 1)) for i in range(_MAX_VLM_SLICES)]
+    logger.info(
+        "Downsampling VLM slices %d -> %d (uniform)", n, len(picks)
+    )
+    return [slice_indices[i] for i in picks], [normalized_img_list[i] for i in picks]
+
+
 def _custom_build_user_content(
     endpoint_type: str,
     instruction: str,
@@ -1332,6 +1378,7 @@ def _custom_build_user_content(
     Reuses the multimodal content builders shared with the other VLM providers when
     medical slices are available; otherwise sends a plain-text prompt.
     """
+    slice_indices, normalized_img_list = _cap_slices(slice_indices, normalized_img_list)
     if endpoint_type == "openai-responses":
         if not slice_indices:
             return [{"type": "input_text", "text": _custom_text_content(instruction, query)}]
@@ -1391,7 +1438,7 @@ def _custom_run(
         client = Anthropic(
             api_key=api_key,
             base_url=base_url or "https://api.anthropic.com",
-            timeout=1200.0,
+            timeout=_llm_timeout(),
         )
         user_content = _custom_build_user_content(
             endpoint_type, instruction, query, slice_indices, normalized_img_list
@@ -1475,6 +1522,7 @@ def _mas_run(
         ) from err
 
     from monailabel.tasks.infer.mas_inference import MASWorkflowError, run_orchestrated_workflow
+    from monailabel.tasks.infer.orchestration import WorkflowCancelled
 
     strategy = str(data.get("mas_strategy") or "single").strip().lower()
     try:
@@ -1482,7 +1530,12 @@ def _mas_run(
     except (TypeError, ValueError):
         rounds = 2
 
-    client = OpenAI(api_key=api_key, base_url=base_url, timeout=1200.0)
+    # max_retries=0: retry policy lives entirely in _call_agent (one bounded
+    # retry). The SDK default of 2 silently doubles every failed gateway
+    # round-trip — exactly the "unnecessary waiting" this flow must avoid.
+    # timeout: per-call budget for slow multi-image upstreams
+    # (MONAI_LABEL_LLM_TIMEOUT_SECONDS, default 1800s).
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=_llm_timeout(), max_retries=0)
     user_content = _custom_build_user_content(
         "openai-chat", instruction, query, slice_indices, normalized_img_list
     )
@@ -1506,6 +1559,13 @@ def _mas_run(
             initial_content=user_content,
             rounds=rounds,
             run_id=(str(data.get("mas_run_id") or "").strip() or None),
+        )
+    except WorkflowCancelled:
+        # A newer consultation superseded this run; report it as a plain
+        # cancellation (the viewer ignores the aborted request anyway).
+        raise MONAILabelException(
+            MONAILabelError.INVALID_INPUT,
+            "MAS run cancelled: superseded by a newer request.",
         )
     except MASWorkflowError as err:
         raise MONAILabelException(MONAILabelError.INVALID_INPUT, str(err)) from err
