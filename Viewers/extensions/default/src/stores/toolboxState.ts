@@ -5,6 +5,8 @@ let posNeg = false;
 let refineNew = false;
 let textPromptReplaceNew = false; // Replace/New toggle for Text Prompt Segmentation
 let selectedModel: string = 'nnInteractive'; // Model selection is provided by the backend registry
+let selectedTextModel: string = 'VoxTell'; // Text-prompt model selection (backend registry, task=text_prompt_segmentation)
+let textModelGateWarning: boolean = false; // Set when 文本提示 clicked while the text model is not loaded
 let locked = false;
 let inferenceInFlight = false;
 let pendingInferenceRun = false;
@@ -197,6 +199,17 @@ export const toolboxState = {
   getSelectedModel: () => selectedModel,
   setSelectedModel: (model: string) => {
     selectedModel = model;
+  },
+  // Text-prompt model selection (VoxTell etc. — task=text_prompt_segmentation)
+  getSelectedTextModel: () => selectedTextModel,
+  setSelectedTextModel: (model: string) => {
+    selectedTextModel = model;
+  },
+  // "文本提示" clicked while text model not loaded — the toolbox shows an
+  // inline warning (works even where global toasts are unavailable).
+  getTextModelGateWarning: () => textModelGateWarning,
+  setTextModelGateWarning: (show: boolean) => {
+    textModelGateWarning = show;
   },
   // Legacy methods for backward compatibility (deprecated)
   getNnInterSam2: () => selectedModel === 'sam2',

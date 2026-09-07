@@ -40,6 +40,22 @@ def release_session(token: str):
     return {"released": True}
 
 
+@router.post("/{token}/cancel", summary="Cancel an in-flight inference and evict its session")
+def cancel_session_inference(token: str):
+    """Cancel the inference currently running on this session (if any).
+
+    Sent by the frontend when the user clicks 停止推理 or refreshes/closes the
+    page mid-inference. Marks the request cancelled and evicts the session so a
+    subsequent request claims a fresh one instead of waiting behind a cancelled
+    (possibly GPU-stuck) prediction. Idempotent; safe to pair with release.
+    """
+    from monailabel.tasks.infer.basic_infer import cancel_inference
+
+    cancelled = cancel_inference(token)
+    nninter_session_pool.get_pool().release(token)
+    return {"cancelled": cancelled, "token": token}
+
+
 @model_router.post("/{model}/load", summary="Load an interactive segmentation model and confirm readiness")
 def load_interactive_model(model: str):
     model_spec = get_model(model)

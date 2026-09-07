@@ -53,7 +53,7 @@ import {
 } from './stores/toolboxState';
 import { parseMultipart } from './utils/multipart';
 import { callInputDialog } from './utils/callInputDialog';
-import { getNninterToken, clearNninterToken } from './utils/nninterSession';
+import { getNninterToken, clearNninterToken, cancelNninterSession } from './utils/nninterSession';
 
 /** Tracks the last series initialized by initNninter to detect study/series changes. */
 let _lastInitSeries: string | undefined = undefined;
@@ -3585,15 +3585,23 @@ const commandsModule = ({
         },
       });
 
-      // Show notification with promise support
+      // Show notification with promise support.
+      // 文本提示分割（VoxTell）走 texts 参数：与 nninter 交互式分割共用本推理
+      // 通道，但弹窗必须区分并汉化 —— nninter 的英文 Processing 弹窗对
+      // 文本提示用户是误导。
+      const isTextPromptRun = text_prompts.length > 0;
       uiNotificationService.show({
-        title: 'MONAI Label',
-        message: 'Processing nninter segmentation...',
+        title: isTextPromptRun ? '文本提示分割 (VoxTell)' : '交互式分割 (nnInteractive)',
+        message: isTextPromptRun
+          ? '正在运行 VoxTell 文本分割…（约 2–4 分钟，请勿关闭页面）'
+          : '正在运行分割…',
         type: 'info',
         promise: segmentationPromise,
         promiseMessages: {
-          loading: 'Processing nninter segmentation...',
-          success: () => 'Run Segmentation - Successful',
+          loading: isTextPromptRun
+            ? '正在运行 VoxTell 文本分割…（约 2–4 分钟，请勿关闭页面）'
+            : '正在运行分割…',
+          success: () => (isTextPromptRun ? '文本分割完成' : '分割完成'),
           // Prod: no red seg-failure alert for end users — log it and quietly
           // dismiss the "Processing..." toast (null suppresses the error toast).
           error: error => {
@@ -4044,7 +4052,36 @@ const commandsModule = ({
         return;
       }
 
-      const { uiDialogService } = servicesManager.services;
+      const { uiDialogService, uiNotificationService } = servicesManager.services;
+
+      // 文本分割模型默认不加载（体积大）：先向后端确认加载状态，
+      // 未 ready 时提示用户先点击「加载模型」，避免首用现场加载的漫长等待。
+      const textModelId = toolboxState.getSelectedTextModel() || 'VoxTell';
+      try {
+        const statusResponse = await fetch(
+          `/monai/text/model/${encodeURIComponent(textModelId)}/status`,
+          { method: 'GET' }
+        );
+        if (statusResponse.ok) {
+          const status = (await statusResponse.json()) as {
+            state?: string;
+          };
+          if (status?.state !== 'ready') {
+            uiNotificationService.show({
+              title: '文本提示分割',
+              message: `「${textModelId}」模型尚未加载。请先在「文本提示分割」面板点击「加载模型」，加载完成后（会有成功提示）再运行分割。`,
+              type: 'warning',
+              duration: 6000,
+            });
+            // 面板内联警告：toast 在部分环境不可用时仍保证用户能看到提示
+            toolboxState.setTextModelGateWarning(true);
+            return;
+          }
+        }
+        // 状态接口不可用（例如后端重启中）：放行，由后端首次使用时加载兜底。
+      } catch (error) {
+        console.warn('Text model status check skipped:', error);
+      }
 
       try {
         // Open dialog to get text input
@@ -4080,6 +4117,21 @@ const commandsModule = ({
         console.error('Text prompt segmentation error:', error);
         return;
       }
+    },
+    async stopTextPromptInference() {
+      // 停止推理：通知后端取消当前会话上的推理并作废旧会话。
+      // 后端 CUDA 推理无法被代码立即强杀——如果模型已经卡死在 GPU 循环里，
+      // 显存占用会持续到该轮自然结束；但会话已被作废，刷新/重试不会被旧任务阻塞。
+      cancelNninterSession();
+      const { uiNotificationService } = servicesManager.services;
+      uiNotificationService.show({
+        title: '文本提示分割',
+        message: '已请求停止推理，当前分割任务将被丢弃（GPU 上的旧任务可能仍需一小会儿才会完全释放）。',
+        type: 'info',
+        duration: 5000,
+      });
+      toolboxState.setInferenceInFlight(false);
+      return { stopped: true };
     },
     async testVlm(options?: {
       vlmProvider?: VlmProviderId;
@@ -4520,6 +4572,7 @@ const commandsModule = ({
     vllm: actions.vllm,
     nninter: actions.nninter,
     textPromptSegmentation: actions.textPromptSegmentation,
+    stopTextPromptInference: actions.stopTextPromptInference,
     testVlm: actions.testVlm,
     testMedgemma: actions.testMedgemma,
     testGemini: actions.testGemini,

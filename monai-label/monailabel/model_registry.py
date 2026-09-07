@@ -31,6 +31,14 @@ _MODEL_REGISTRY = (
         "task": "interactive_segmentation",
         "capabilities": ("point", "box"),
     },
+    {
+        "id": "VoxTell",
+        "display_name": "VoxTell",
+        "provider": "builtin",
+        "task": "text_prompt_segmentation",
+        "capabilities": ("text",),
+        "default": True,
+    },
 )
 
 

@@ -37,7 +37,7 @@ Set-Location "D:\Smart City\Medical-imaging"
 # PYTHONPATH 必需：monailabel 未 pip 安装到 conda 环境，靠它解析本地源码
 $env:PYTHONPATH = "D:\Smart City\Medical-imaging\monai-label"
 # 模型中央目录：须包含 sam2.1_hiera_tiny.pt、MedSAM2_latest.pt、sam3.pt、
-# nnInteractive.pth、vox_v1.1/ 等权重（文件名须与 basic_infer.py 一致）
+# nnInteractive.pth、voxtell_v1.1/、Qwen3-Embedding-4B/ 等权重（文件名须与 basic_infer.py 一致）
 $env:MONAI_LABEL_CHECKPOINTS_DIR = "D:\Smart City\checkpoints"
 # 运行时产物目录：predictions/、img_cache/ 会创建在这里
 $env:MONAI_LABEL_RUNTIME_DIR = "D:\Smart City\Medical-imaging\monai-label"
@@ -46,6 +46,8 @@ $env:LOAD_SAM2 = "lazy"
 $env:LOAD_SAM3 = "lazy"
 $env:LOAD_MEDSAM2 = "lazy"
 $env:LOAD_VOXTELL = "lazy"
+# VoxTell 文本编码器本地目录（scripts\download_qwen_embedding.py 预下载）；不设置则默认走 HF hub
+$env:VOXTELL_TEXT_BACKBONE = "D:\Smart City\checkpoints\Qwen3-Embedding-4B"
 $env:PYTHONUNBUFFERED = "1"
 
 conda run --no-capture-output -n smartcity python -u -m monailabel.main start_server `

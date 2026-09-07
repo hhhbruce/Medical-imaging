@@ -271,29 +271,99 @@ def _model_eager(name: str) -> bool:
 
 
 _vox_predictor = None
+_vox_predictor_load_lock = threading.Lock()
+
+# ── Text-prompt model load state machine ────────────────────────────────────
+# Text models are large (VoxTell + Qwen3-Embedding-4B text backbone) and are
+# intentionally NOT loaded at boot. The UI drives the load with an explicit
+# request and then polls the status; the same state is updated when an
+# inference request triggers a first-use load, so the reported state always
+# reflects reality no matter which path started the load.
+#   state: idle -> loading -> ready | error
+_TEXT_MODEL_STATE_LOCK = threading.RLock()
+_TEXT_MODEL_STATES: Dict[str, Dict[str, Any]] = {
+    "VoxTell": {
+        "state": "idle",
+        "started_at": None,
+        "elapsed_s": None,
+        "error": None,
+    },
+}
+
+
+def _text_model_status(model_id: str) -> Dict[str, Any]:
+    """Return a serializable snapshot of one text model's load state."""
+    with _TEXT_MODEL_STATE_LOCK:
+        entry = _TEXT_MODEL_STATES.get(model_id)
+        if entry is None:
+            return {"state": "unknown", "started_at": None, "elapsed_s": None, "error": None}
+        state = dict(entry)
+        if state["started_at"] is not None:
+            state["elapsed_s"] = round(time.time() - state["started_at"], 1)
+        return state
+
+
+def _text_model_status_update(model_id: str, **fields: Any) -> None:
+    with _TEXT_MODEL_STATE_LOCK:
+        entry = _TEXT_MODEL_STATES.setdefault(
+            model_id,
+            {"state": "idle", "started_at": None, "elapsed_s": None, "error": None},
+        )
+        entry.update(fields)
 
 
 def _get_vox_predictor():
-    """Lazily build (and cache) the VoxTell text-prompt predictor on cuda:0."""
+    """Lazily build (and cache) the VoxTell text-prompt predictor on cuda:0.
+
+    Loading is observable through the /text/model/* status API so the frontend
+    can report progress ("加载模型…" -> "模型加载成功") driven by backend state.
+    Concurrent callers (explicit load request + a first-use inference) serialize
+    on the build lock and share the cached predictor.
+    """
     global _vox_predictor
     if _vox_predictor is None:
-        vox_checkpoint_ready = _ensure_flat_checkpoint_link(
-            "VoxTell.pth",
-            pathlib.Path(vox_model_path) / "fold_0" / "checkpoint_final.pth",
-        )
-        if vox_checkpoint_ready:
-            _download_required_files(
-                "mrokuss/VoxTell",
-                [f"{VOX_MODEL_NAME}/plans.json", "config.json"],
-            )
-        else:
-            _snapshot_download_cached(
-                repo_id="mrokuss/VoxTell",
-                allow_patterns=[f"{VOX_MODEL_NAME}/*", "*.json"],
-                local_dir=DOWNLOAD_DIR,
-            )
-        from voxtell.inference.predictor import VoxTellPredictor
-        _vox_predictor = VoxTellPredictor(model_dir=vox_model_path, device=torch.device("cuda:0"))
+        with _vox_predictor_load_lock:
+            if _vox_predictor is None:
+                _text_model_status_update("VoxTell", state="loading", started_at=time.time(), error=None)
+                try:
+                    vox_checkpoint_ready = _ensure_flat_checkpoint_link(
+                        "VoxTell.pth",
+                        pathlib.Path(vox_model_path) / "fold_0" / "checkpoint_final.pth",
+                    )
+                    if vox_checkpoint_ready:
+                        _download_required_files(
+                            "mrokuss/VoxTell",
+                            [f"{VOX_MODEL_NAME}/plans.json", "config.json"],
+                        )
+                    else:
+                        _snapshot_download_cached(
+                            repo_id="mrokuss/VoxTell",
+                            allow_patterns=[f"{VOX_MODEL_NAME}/*", "*.json"],
+                            local_dir=DOWNLOAD_DIR,
+                        )
+                    from voxtell.inference.predictor import VoxTellPredictor
+                    # Text backbone: default = upstream Qwen3-Embedding-4B pulled from the HF
+                    # hub on first use. Local deployments without hub access can pre-download
+                    # the model into a folder (see scripts/download_qwen_embedding.py) and set
+                    # VOXTELL_TEXT_BACKBONE to that folder; from_pretrained accepts a path.
+                    vox_text_backbone = os.environ.get(
+                        "VOXTELL_TEXT_BACKBONE", "Qwen/Qwen3-Embedding-4B"
+                    ).strip()
+                    _vox_predictor = VoxTellPredictor(
+                        model_dir=vox_model_path,
+                        device=torch.device("cuda:0"),
+                        text_encoding_model=vox_text_backbone,
+                    )
+                    # Keep the sliding-window accumulator on CPU to reduce peak GPU memory:
+                    # this host shares an 8 GB GPU with the resident nnInteractive model and
+                    # full-GPU accumulation caused allocator thrash (patch latency exploding
+                    # from ~4s to 30s+ and occasional stalls).
+                    _vox_predictor.perform_everything_on_device = False
+                    _text_model_status_update("VoxTell", state="ready", started_at=None)
+                except Exception as error:  # noqa: BLE001 - surface any load failure to the API
+                    _text_model_status_update("VoxTell", state="error", started_at=None, error=str(error))
+                    logger.exception("Failed to load VoxTell text-prompt model")
+                    raise
     return _vox_predictor
 
 from nnInteractive.inference.inference_session import nnInteractiveInferenceSession
@@ -643,6 +713,83 @@ def ensure_interactive_model_ready(model: str) -> Dict[str, Any]:
     return {"model": model, "status": "ready"}
 
 
+# ── Text-prompt model management (driven by the /text/model/* endpoints) ─────
+# Unlike the interactive models (small, resident at boot), text-prompt models are
+# loaded on demand: the UI calls load and then polls status while loading.
+
+
+def text_model_status(model_id: str) -> Dict[str, Any]:
+    """Return the load-state snapshot for one text-prompt model."""
+    return _text_model_status(model_id)
+
+
+def text_model_load_begin(model_id: str) -> None:
+    """Mark a text model as loading before its background worker starts.
+
+    Called by the load endpoint so the first status poll never races the worker
+    thread. The worker itself re-marks ``loading`` (with a fresh timestamp) when
+    it actually enters the predictor build, then ``ready``/``error``.
+    """
+    _text_model_status_update(model_id, state="loading", started_at=time.time(), error=None)
+
+
+# ── Client-initiated inference cancel ────────────────────────────────────────
+# The frontend sends POST /nninter/session/{token}/cancel when the user clicks
+# "停止推理" or refreshes/closes the page while an inference is in flight. A
+# cancel evicts the session (release) and sets the request's event; the worker
+# thread checks the event before/after the (uninterruptible) VoxTell predict and
+# drops the result instead of writing/returning it. Predictions already inside
+# the CUDA loop cannot be killed from Python — see caller comments.
+_INFER_CANCEL_LOCK = threading.RLock()
+_INFER_CANCELS: Dict[str, threading.Event] = {}
+
+
+def _register_infer_cancel(token: str) -> threading.Event:
+    """Register a cancel event for an in-flight inference request."""
+    event = threading.Event()
+    if token:
+        with _INFER_CANCEL_LOCK:
+            _INFER_CANCELS[token] = event
+    return event
+
+
+def _unregister_infer_cancel(token: str) -> None:
+    if not token:
+        return
+    with _INFER_CANCEL_LOCK:
+        _INFER_CANCELS.pop(token, None)
+
+
+def cancel_inference(token: Optional[str]) -> bool:
+    """Flag an in-flight inference for cancellation (idempotent).
+
+    Returns True when an active request was registered for this token. The
+    caller (session-cancel endpoint) also releases/evicts the session so new
+    requests claim a fresh one instead of waiting on the cancelled request.
+    """
+    if not token:
+        return False
+    with _INFER_CANCEL_LOCK:
+        event = _INFER_CANCELS.pop(token, None)
+    if event is not None:
+        event.set()
+    return event is not None
+
+
+def text_model_load(model_id: str) -> Dict[str, Any]:
+    """Load a text-prompt model, returning only after it is usable.
+
+    Called from a request thread (FastAPI runs plain ``def`` handlers in its
+    threadpool), so a long first load does not block the event loop. A second
+    concurrent call for the same model blocks on the predictor build lock and
+    then observes the cached predictor.
+    """
+    if model_id == "VoxTell":
+        _get_vox_predictor()
+        return {"model": model_id, **text_model_status(model_id)}
+    raise ValueError(f"Unsupported text prompt segmentation model: {model_id}")
+
+
 # Eager-load the optional models here — AFTER the torch.compile warmup thread has
 # been kicked off above — so their GPU/disk load OVERLAPS the ~13s compile instead
 # of delaying it (this is why VoxTell is loaded here rather than at its snapshot
@@ -654,7 +801,6 @@ if _model_eager("VOXTELL"):
     _get_vox_predictor()
 if _model_eager("MEDSAM2"):
     _get_predictor_med()
-
 import transformers
 
 _MEDGEMMA_HF_1_5_4B = "google/medgemma-1.5-4b-it"
@@ -2734,6 +2880,29 @@ class BasicInferTask(InferTask):
                             ) from conn_err
 
             if len(data['texts'])==1 and data['texts'][0]!='' and data['texts'][0]!={}:
+                # Client-side cancel support: register a per-session cancel event so
+                # "停止推理" / page refresh (sendBeacon POST /nninter/session/{t}/cancel)
+                # can invalidate the session and skip the result bookkeeping. The VoxTell
+                # predict loop itself cannot be interrupted from Python, so a cancelled
+                # request may still occupy the GPU until that call returns; afterwards we
+                # drop the result instead of uploading/writing it.
+                _vox_token = str(data.get("nninter_token") or "")
+                _vox_cancel = _register_infer_cancel(_vox_token)
+                if _vox_cancel.is_set():
+                    raise MONAILabelException(
+                        MONAILabelError.INFERENCE_ERROR,
+                        "Text inference cancelled by user",
+                    )
+                if img is None:
+                    # In-memory pixel-cache hits skip the DICOM reader, but the
+                    # VoxTell text-prompt path needs the SimpleITK volume
+                    # (direction/spacing) for a correct RAS conversion, so
+                    # re-read the series from disk on demand.
+                    _vox_reader = sitk.ImageSeriesReader()
+                    _vox_reader.SetFileNames(_vox_reader.GetGDCMSeriesFileNames(dicom_dir))
+                    img = _vox_reader.Execute()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 orig_orient = sitk.DICOMOrientImageFilter_GetOrientationFromDirectionCosines(
                     img.GetDirection()
                 )
@@ -2742,6 +2911,12 @@ class BasicInferTask(InferTask):
                 img_np = sitk.GetArrayFromImage(img_ras)[None]
                 voxtell_seg_np_ras = _get_vox_predictor().predict_single_image(img_np, data['texts'][0])
 
+                if _vox_cancel.is_set():
+                    _unregister_infer_cancel(_vox_token)
+                    raise MONAILabelException(
+                        MONAILabelError.INFERENCE_ERROR,
+                        "Text inference cancelled by user",
+                    )
                 voxtell_seg_sitk_ras = sitk.GetImageFromArray(voxtell_seg_np_ras[0])
                 voxtell_seg_sitk_ras.CopyInformation(img_ras)
 
@@ -2765,6 +2940,7 @@ class BasicInferTask(InferTask):
 
                 logger.info(f"final_result_json info: {final_result_json}")
 
+                _unregister_infer_cancel(_vox_token)
                 return voxtell_seg_np, final_result_json
 
             def _safe_interaction(perform_callable):

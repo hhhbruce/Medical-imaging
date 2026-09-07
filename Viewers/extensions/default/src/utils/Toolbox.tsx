@@ -32,8 +32,16 @@ import { MarkdownText } from './MarkdownText';
 import {
   fetchInteractiveModels,
   getInteractiveModelDisplayName,
+  fetchTextPromptModels,
+  getTextPromptModelDisplayName,
+  fetchTextModelStatus,
+  startTextModelLoad,
   type InteractiveModelId,
   type InteractiveModelSpec,
+  type TextPromptModelId,
+  type TextPromptModelSpec,
+  type TextModelLoadState,
+  type TextModelStatus,
 } from './interactiveModelRegistry';
 
 interface ButtonProps {
@@ -99,6 +107,21 @@ export function Toolbox({
   const [isModelLoading, setIsModelLoading] = useState(false);
   const modelSwitchRequestRef = useRef(0);
   const modelSwitchPendingRef = useRef(false);
+  // ---- 文本提示分割：模型下拉框 + 按需加载 ----
+  // 文本模型（VoxTell + Qwen3-Embedding-4B）体积大，默认不加载。用户点
+  // 「加载模型」后由后端异步加载，前端轮询 /monai/text/model/{id}/status，
+  // 以「后端信号」驱动加载完成/失败的弹窗提示。
+  const [textModels, setTextModels] = useState<TextPromptModelSpec[]>([]);
+  const [textModelsLoading, setTextModelsLoading] = useState(false);
+  const [textModelsError, setTextModelsError] = useState<string | null>(null);
+  const [selectedTextModel, setSelectedTextModel] = useState<TextPromptModelId>(
+    toolboxState.getSelectedTextModel()
+  );
+  const [textModelStatus, setTextModelStatus] = useState<TextModelStatus | null>(null);
+  const [textLoadStartedByUser, setTextLoadStartedByUser] = useState(false);
+  const [textGateWarning, setTextGateWarning] = useState(false);
+  const [textInferenceActive, setTextInferenceActive] = useState(false);
+  const textStatusAbortRef = useRef<AbortController | null>(null);
   const [medgemmaResult, setMedgemmaResult] = useState(toolboxState.getMedgemmaResult());
   const [masTrace, setMasTrace] = useState<MasTracePayload | null>(toolboxState.getMasTrace());
   // Multi-agent consultation data-flow popup (弹窗): opens the moment 运行 is
@@ -254,6 +277,238 @@ export function Toolbox({
 
     return () => controller.abort();
   }, [isAIToolBox]);
+
+  // 文本提示分割工具箱：拉取 text_prompt_segmentation 任务下的模型列表
+  useEffect(() => {
+    if (!isTextPromptToolbox) {
+      return;
+    }
+
+    const controller = new AbortController();
+    setTextModelsLoading(true);
+    setTextModelsError(null);
+
+    fetchTextPromptModels(controller.signal)
+      .then(models => {
+        if (models.length === 0) {
+          throw new Error('No text-prompt segmentation models are registered');
+        }
+
+        setTextModels(models);
+        const currentTextModel = toolboxState.getSelectedTextModel();
+        const currentIsRegistered = models.some(model => model.id === currentTextModel);
+        if (!currentIsRegistered) {
+          const defaultModel = models.find(model => model.default) ?? models[0];
+          toolboxState.setSelectedTextModel(defaultModel.id);
+          setSelectedTextModel(defaultModel.id);
+        }
+      })
+      .catch(error => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        console.error('Failed to load text-prompt model registry:', error);
+        setTextModelsError('文本模型注册表加载失败');
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) {
+          setTextModelsLoading(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [isTextPromptToolbox]);
+
+  // 选中模型变化时：向后端同步一次该模型的加载状态（后端信号）
+  useEffect(() => {
+    if (!isTextPromptToolbox || !selectedTextModel) {
+      return;
+    }
+
+    textStatusAbortRef.current?.abort();
+    const controller = new AbortController();
+    textStatusAbortRef.current = controller;
+    setTextModelStatus(null);
+    setTextLoadStartedByUser(false);
+
+    fetchTextModelStatus(selectedTextModel, controller.signal)
+      .then(status => {
+        if (!controller.signal.aborted) {
+          setTextModelStatus(status);
+        }
+      })
+      .catch(error => {
+        if (controller.signal.aborted) {
+          return;
+        }
+        console.error('Failed to fetch text model status:', error);
+        setTextModelStatus(null);
+      });
+
+    return () => {
+      controller.abort();
+      if (textStatusAbortRef.current === controller) {
+        textStatusAbortRef.current = null;
+      }
+    };
+  }, [isTextPromptToolbox, selectedTextModel]);
+
+  // 加载进行中：每 2s 轮询后端状态；loading -> ready/error 时弹窗提示
+  // （成功提示完全由后端返回的 state 信号驱动）
+  useEffect(() => {
+    if (
+      !isTextPromptToolbox ||
+      !selectedTextModel ||
+      (textModelStatus?.state !== 'loading' && !textLoadStartedByUser)
+    ) {
+      return;
+    }
+
+    const displayName = getTextPromptModelDisplayName(textModels, selectedTextModel);
+    let active = true;
+    let lastState: TextModelLoadState = textModelStatus?.state ?? 'loading';
+
+    const timer = setInterval(() => {
+      fetchTextModelStatus(selectedTextModel)
+        .then(status => {
+          if (!active) {
+            return;
+          }
+          setTextModelStatus(status);
+
+          if (lastState === 'loading' && status.state !== 'loading') {
+            setTextLoadStartedByUser(false);
+            const uiNotificationService =
+              servicesManager.services.uiNotificationService;
+            if (status.state === 'ready') {
+              uiNotificationService?.show?.({
+                title: '文本提示分割',
+                message: `${displayName} 模型加载成功，可以开始文本提示分割`,
+                type: 'success',
+                duration: 4000,
+                allowDuplicates: false,
+              });
+            } else if (status.state === 'error') {
+              uiNotificationService?.show?.({
+                title: '文本提示分割',
+                message: `${displayName} 模型加载失败：${status.error ?? '未知错误'}`,
+                type: 'error',
+                duration: 6000,
+                allowDuplicates: false,
+              });
+            }
+          }
+          lastState = status.state;
+        })
+        .catch(() => {
+          // 瞬时网络错误：继续轮询，不打扰用户
+        });
+    }, 2000);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+    };
+  }, [
+    isTextPromptToolbox,
+    selectedTextModel,
+    textModels,
+    textModelStatus?.state,
+    textLoadStartedByUser,
+  ]);
+
+  // 面板内联警告同步：点「文本提示」而模型未加载时由命令置位（toast 可能不可用）；
+  // 同时同步推理进行中状态（用于显示「停止推理」按钮）
+  useEffect(() => {
+    if (!isTextPromptToolbox) {
+      return;
+    }
+
+    const timer = setInterval(() => {
+      const showWarning = toolboxState.getTextModelGateWarning();
+      setTextGateWarning(prev => {
+        if (prev === showWarning) {
+          return prev;
+        }
+        // 状态变化时清除自动超时
+        return showWarning;
+      });
+      setTextInferenceActive(toolboxState.getInferenceInFlight());
+    }, 400);
+
+    return () => clearInterval(timer);
+  }, [isTextPromptToolbox]);
+
+  // 警告展示 12s 后自动消失；开始加载或已就绪时立即清除
+  useEffect(() => {
+    if (!textGateWarning) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      toolboxState.setTextModelGateWarning(false);
+      setTextGateWarning(false);
+    }, 12000);
+    return () => clearTimeout(timer);
+  }, [textGateWarning]);
+
+  useEffect(() => {
+    if (textModelStatus?.state === 'loading' || textModelStatus?.state === 'ready') {
+      toolboxState.setTextModelGateWarning(false);
+      setTextGateWarning(false);
+    }
+  }, [textModelStatus?.state]);
+
+  // 点击「加载模型」：请求后端开始加载当前下拉框选中的模型
+  const handleLoadTextModel = async () => {
+    const modelId = selectedTextModel;
+    if (!modelId || textLoadStartedByUser) {
+      return;
+    }
+    const displayName = getTextPromptModelDisplayName(textModels, modelId);
+    const uiNotificationService = servicesManager.services.uiNotificationService;
+
+    setTextLoadStartedByUser(true);
+    setTextModelStatus({ model: modelId, state: 'loading', elapsed_s: 0 });
+
+    try {
+      const status = await startTextModelLoad(modelId);
+      setTextModelStatus(status);
+      if (status.state === 'ready') {
+        setTextLoadStartedByUser(false);
+        uiNotificationService?.show?.({
+          title: '文本提示分割',
+          message: `${displayName} 模型加载成功，可以开始文本提示分割`,
+          type: 'success',
+          duration: 4000,
+        });
+      } else if (status.state === 'error') {
+        setTextLoadStartedByUser(false);
+        uiNotificationService?.show?.({
+          title: '文本提示分割',
+          message: `${displayName} 模型加载失败：${status.error ?? '未知错误'}`,
+          type: 'error',
+          duration: 6000,
+        });
+      }
+      // state === 'loading'：轮询 effect 会持续跟踪直至 ready/error
+    } catch (error) {
+      setTextLoadStartedByUser(false);
+      setTextModelStatus({
+        model: modelId,
+        state: 'error',
+        error: error instanceof Error ? error.message : String(error),
+      });
+      uiNotificationService?.show?.({
+        title: '文本提示分割',
+        message: `模型加载请求失败：${
+          (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+          (error instanceof Error ? error.message : String(error))
+        }`,
+        type: 'error',
+        duration: 6000,
+      });
+    }
+  };
 
   // Sync VLM toolbox state from toolboxState
   useEffect(() => {
@@ -809,23 +1064,174 @@ export function Toolbox({
                   </div>
                 )}
                 {isTextPromptToolbox && (
-                  <div className="bg-muted/40 flex items-center justify-center gap-4 px-3 py-2">
-                    <div className="flex items-center gap-2">
-                      <Label
-                        htmlFor="replace-new"
-                        className="text-xs font-medium"
-                      >
-                        替换/新建
-                      </Label>
-                      <Switch
-                        id="replace-new"
-                        checked={textPromptReplaceNew}
-                        onCheckedChange={checked => {
-                          setTextPromptReplaceNew(checked);
-                          toolboxState.setTextPromptReplaceNew(checked);
-                          console.log('Replace/New:', checked);
-                        }}
-                      />
+                  <div className="bg-card border-border flex flex-col gap-3 border-b px-3 py-3">
+                    {/* 文本分割模型：下拉框 + 手动加载（模型大，默认不加载） */}
+                    <div className="flex flex-col gap-2">
+                      <span className="text-muted-foreground text-[11px] font-medium tracking-wider">
+                        分割模型
+                      </span>
+                      <div className="bg-muted/50 flex flex-col gap-2 rounded-lg p-2">
+                        <div className="flex items-center gap-2">
+                          <Select
+                            value={selectedTextModel}
+                            onValueChange={value => {
+                              setSelectedTextModel(value);
+                              toolboxState.setSelectedTextModel(value);
+                            }}
+                          >
+                            <SelectTrigger
+                              id="text-model-selection"
+                              className="w-full"
+                              disabled={
+                                textModelsLoading ||
+                                textModels.length === 0 ||
+                                textModelStatus?.state === 'loading'
+                              }
+                            >
+                              <SelectValue placeholder="选择模型" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {textModels.map(model => (
+                                <SelectItem
+                                  key={model.id}
+                                  value={model.id}
+                                >
+                                  {model.displayName}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            className="shrink-0"
+                            disabled={
+                              textModels.length === 0 ||
+                              textLoadStartedByUser ||
+                              textModelStatus?.state === 'loading' ||
+                              textModelStatus?.state === 'ready'
+                            }
+                            onClick={() => {
+                              void handleLoadTextModel();
+                            }}
+                          >
+                            {textModelStatus?.state === 'loading' ||
+                            textLoadStartedByUser ? (
+                              <>
+                                <Icons.LoadingSpinner className="mr-1 h-3 w-3 animate-spin" />
+                                加载中…
+                              </>
+                            ) : textModelStatus?.state === 'ready' ? (
+                              '已加载 ✓'
+                            ) : (
+                              '加载模型'
+                            )}
+                          </Button>
+                        </div>
+                        {textModelsLoading && (
+                          <span
+                            className="text-primary text-xs"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            加载模型列表…
+                          </span>
+                        )}
+                        {!textModelsLoading && textModelsError && (
+                          <span
+                            className="text-destructive text-xs"
+                            role="alert"
+                          >
+                            {textModelsError}
+                          </span>
+                        )}
+                        {textModelStatus?.state === 'loading' && (
+                          <span
+                            className="text-primary flex items-center gap-1 text-xs"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            正在加载{' '}
+                            {getTextPromptModelDisplayName(textModels, selectedTextModel)}{' '}
+                            模型（约需 1–3 分钟，首次加载较慢）…
+                            {textModelStatus.elapsed_s != null
+                              ? ` ${Math.round(textModelStatus.elapsed_s)}s`
+                              : ''}
+                          </span>
+                        )}
+                        {textModelStatus?.state === 'ready' && (
+                          <span
+                            className="text-emerald-500 flex items-center gap-1 text-xs"
+                            role="status"
+                            aria-live="polite"
+                          >
+                            ✓{' '}
+                            {getTextPromptModelDisplayName(textModels, selectedTextModel)}{' '}
+                            模型已加载
+                            {textModelStatus.elapsed_s != null
+                              ? `（用时 ${Math.round(textModelStatus.elapsed_s)}s）`
+                              : ''}
+                          </span>
+                        )}
+                        {textModelStatus?.state === 'error' && (
+                          <span
+                            className="text-destructive text-xs"
+                            role="alert"
+                          >
+                            模型加载失败：{textModelStatus.error ?? '未知错误'}
+                            {'（请检查后端日志与权重文件后重试）'}
+                          </span>
+                        )}
+                        {textGateWarning &&
+                          (!textModelStatus ||
+                            (textModelStatus.state !== 'loading' &&
+                              textModelStatus.state !== 'ready')) && (
+                            <span
+                              className="bg-destructive/10 text-destructive rounded px-2 py-1 text-xs"
+                              role="alert"
+                            >
+                              ⚠ 模型尚未加载，请先点击上方「加载模型」按钮
+                            </span>
+                          )}
+                        {textInferenceActive && (
+                          <Button
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90 w-full"
+                            onClick={() => {
+                              void commandsManager?.run('stopTextPromptInference');
+                            }}
+                          >
+                            停止推理
+                          </Button>
+                        )}
+                        {(!textModelStatus ||
+                          textModelStatus.state === 'idle' ||
+                          textModelStatus.state === 'unknown') &&
+                          !textModelsLoading &&
+                          !textModelsError && (
+                            <span className="text-muted-foreground text-xs">
+                              文本分割模型体积较大、不随服务启动加载。点击「加载模型」
+                              开始加载，完成后会弹窗提示。
+                            </span>
+                          )}
+                      </div>
+                    </div>
+                    {/* 替换/新建 */}
+                    <div className="flex items-center justify-center gap-4 px-3 py-1">
+                      <div className="flex items-center gap-2">
+                        <Label
+                          htmlFor="replace-new"
+                          className="text-xs font-medium"
+                        >
+                          替换/新建
+                        </Label>
+                        <Switch
+                          id="replace-new"
+                          checked={textPromptReplaceNew}
+                          onCheckedChange={checked => {
+                            setTextPromptReplaceNew(checked);
+                            toolboxState.setTextPromptReplaceNew(checked);
+                            console.log('Replace/New:', checked);
+                          }}
+                        />
+                      </div>
                     </div>
                   </div>
                 )}

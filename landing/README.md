@@ -22,8 +22,9 @@ python -m http.server 8791
 | `workbench` | 进入工作台（后台） | `http://localhost:3000/` | 与研究空间「打开研究空间」同址（OHIF Viewer） |
 | `pacs` | PACS 后台（中间件后台） | `http://localhost:8042/` | Orthanc Explorer，检查/实例管理 |
 | `lab` | 打开研究空间 | `http://localhost:3000/` | 本地研究服务 |
+| `atlas` | 人体图谱（新入口） | `http://localhost:5173/` | `landing/landing/` Vite 应用，交互式 3D 解剖图谱 |
 
-入口位置：导航栏「PACS 后台」与右上「进入工作台」、研究空间章节「打开研究空间」按钮、页脚「进入工作台」。≤900px 时右上按钮隐藏，移动端抽屉内显示「进入工作台」和「PACS 后台」两个链接。所有入口均在新标签页打开。
+入口位置：导航栏「PACS 后台」与右上「进入工作台」、研究空间章节「打开研究空间」按钮、页脚「进入工作台」。≤900px 时右上按钮隐藏，移动端抽屉内显示「进入工作台」和「PACS 后台」两个链接。所有入口均在新标签页打开。新增的「人体图谱」入口位于导航栏「研究空间」之后与页脚「探索」栏，指向 `landing/landing/` 的 Vite 应用（与主页一起由 `start-dev.ps1` 拉起）。
 
 迁移到 nginx 同源部署（方案 A）时：在 `docker-compose.yml` 的 ohif_viewer 加挂载 `./landing:/var/www/html/home:ro`，`nginx.conf` 加 `location /home/` 静态块，并把 `config.js` 中的地址改为同源相对路径（见 config.js 内注释）。
 
@@ -32,6 +33,7 @@ python -m http.server 8791
 | 页面 | 地址 | 进程 | 返回主页方式 |
 | --- | --- | --- | --- |
 | 主页 | `http://localhost:8791/` | `landing/` 静态页（python http.server） | —（系统入口） |
+| 人体图谱 | `http://localhost:5173/` | `landing/landing/` vite dev | 左上角「返回 NEXUS 主页」 |
 | 研究空间 | `http://localhost:3000/` | Viewers rsbuild dev（OHIF + /monai 代理） | 左上角 NEXUS logo |
 | 后台 | `http://localhost:1026/` | docker ohif_viewer（nginx + OHIF 生产构建） | 左上角 NEXUS logo（需重新构建镜像后生效） |
 | 中间件后台 | `http://localhost:8042/` | docker orthanc（Orthanc Explorer） | 浏览器返回 |
@@ -46,7 +48,7 @@ cd "D:\Smart City\Medical-imaging"
 powershell -ExecutionPolicy Bypass -File scripts\start-dev.ps1
 ```
 
-按 `docs/backstart.md` 的顺序拉起 Orthanc、主页、研究空间，并自动打开主页；可选 `-WithMonai`（MONAI Label）、`-WithWorkbench`（docker 后台）、`-Stop`（停掉两个开发服务）。
+按 `docs/backstart.md` 的顺序拉起 Orthanc、主页、人体图谱、研究空间，并自动打开主页；可选 `-WithMonai`（MONAI Label）、`-WithWorkbench`（docker 后台）、`-Stop`（停掉主页/人体图谱/研究空间三个开发服务）。
 
 ## 页面内容
 

@@ -13,5 +13,7 @@ window.NEXUS_LINKS = {
   /* 中间件后台：Orthanc Explorer（PACS 检查/实例管理）— docker-compose 的 orthanc */
   pacs: 'http://localhost:8042/',
   /* 研究空间：本地研究服务 */
-  lab: 'http://localhost:3000/'
+  lab: 'http://localhost:3000/',
+  /* 人体图谱：交互式 3D 解剖图谱（landing/landing，vite dev :5173） */
+  atlas: 'http://localhost:5173/'
 };

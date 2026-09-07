@@ -1,0 +1,1 @@
+conda run --no-capture-output -n smartcity python -u -m monailabel.main start_server --app "D:\Smart City\Medical-imaging\monai-label\sample-apps\radiology" --studies "http://localhost:8042/dicom-web" --conf models segmentation --conf use_pretrained_model false --host 0.0.0.0 --port 8002 > "D:\Smart City\Medical-imaging\monai-label\monai-server2.log" 2>&1

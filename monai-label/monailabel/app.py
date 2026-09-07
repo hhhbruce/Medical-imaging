@@ -37,6 +37,7 @@ from monailabel.endpoints import (
     proxy,
     scoring,
     session,
+    text_model,
    # train,
     vlm,
     wsi_infer,
@@ -124,6 +125,7 @@ app.include_router(session.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(model_registry.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(nninter_session.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(nninter_session.model_router, prefix=settings.MONAI_LABEL_API_STR)
+app.include_router(text_model.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(vlm.router, prefix=settings.MONAI_LABEL_API_STR)
 app.include_router(mas.router, prefix=settings.MONAI_LABEL_API_STR)
 
